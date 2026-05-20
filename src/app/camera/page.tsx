@@ -1,0 +1,702 @@
+"use client";
+
+import { useState, useRef, useEffect, useCallback } from "react";
+import Webcam from "react-webcam";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Camera, Scan, Power, CheckCircle, Car,
+  ShieldOff, Wifi, AlertCircle, RefreshCw, Loader2, Info
+} from "lucide-react";
+import { useParking, Slot } from "@/lib/context/ParkingContext";
+import ErrorBoundary from "@/components/ErrorBoundary";
+
+// ─── TensorFlow: CPU backend ONLY — never import webgl ──────────────────────
+import * as tf from "@tensorflow/tfjs-core";
+import "@tensorflow/tfjs-backend-cpu";
+import * as cocoSsd from "@tensorflow-models/coco-ssd";
+
+type CocoModel = cocoSsd.ObjectDetection;
+
+// ─── Global model cache (survives component remounts) ────────────────────────
+let cachedModel: CocoModel | null = null;
+let modelLoadPromise: Promise<CocoModel> | null = null;
+
+async function getModel(): Promise<CocoModel> {
+  if (cachedModel) return cachedModel;
+  if (modelLoadPromise) return modelLoadPromise;
+
+  modelLoadPromise = (async () => {
+    // Force CPU backend and await ready signal
+    await tf.setBackend("cpu");
+    await tf.ready();
+    const model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+    cachedModel = model;
+    return model;
+  })();
+
+  return modelLoadPromise;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function isMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+}
+
+function checkCameraSupport(): { ok: boolean; warning: string | null } {
+  if (typeof window === "undefined") return { ok: true, warning: null };
+
+  if (!window.isSecureContext) {
+    return {
+      ok: false,
+      warning: "Secure context required. Browsers restrict camera APIs to HTTPS or localhost.\nIf testing on mobile, use our automated ngrok HTTPS tunnel.",
+    };
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return {
+      ok: false,
+      warning: "Your browser does not support webcam capture APIs.\nPlease use Google Chrome, Safari, or Microsoft Edge.",
+    };
+  }
+  return { ok: true, warning: null };
+}
+
+// ─── Page Component (wrapped in ErrorBoundary inside export) ────────────────
+function CameraController() {
+  const { locations, assignAiSlot, addSecurityLog } = useParking();
+
+  // Location Selector State
+  const [selectedLocation, setSelectedLocation] = useState(locations[0]?.id || "");
+
+  // Model Loading State
+  const [modelState, setModelState] = useState<"loading" | "ready" | "error">("loading");
+  const [modelMsg, setModelMsg] = useState("Initializing AI Engine...");
+
+  // Camera State
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [compatibility, setCompatibility] = useState<{ ok: boolean; warning: string | null }>({ ok: true, warning: null });
+
+  // Detection & Debounce States
+  const [detection, setDetection] = useState<{ label: string; confidence: number; ts: string } | null>(null);
+  const [assignedSlot, setAssignedSlot] = useState<Slot | null>(null);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("Start camera to begin detection");
+  
+  // Cooldown / Debounce Timer State
+  const [cooldownSecs, setCooldownSecs] = useState(0);
+
+  // Refs
+  const webcamRef = useRef<Webcam>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const modelRef = useRef<CocoModel | null>(null);
+  
+  // Strict Mode double-execution prevention refs
+  const rafRef = useRef<number>(0);
+  const lockedRef = useRef(false);
+  const mountedRef = useRef(true);
+  const lastDetectionTimeRef = useRef<number>(0);
+  const cooldownIntervalRef = useRef<any>(null);
+
+  // Detect mobile & browser compatibility on mount
+  useEffect(() => {
+    mountedRef.current = true;
+    setIsMobileDevice(isMobile());
+    setCompatibility(checkCameraSupport());
+
+    return () => {
+      mountedRef.current = false;
+      // Cleanup animation frame
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+      // Cleanup cooldown timer
+      if (cooldownIntervalRef.current) {
+        clearInterval(cooldownIntervalRef.current);
+      }
+      // Strict unmount: stop camera tracks and release locks
+      stopCameraTracks();
+    };
+  }, []);
+
+  // Utility to stop active webcam tracks completely
+  const stopCameraTracks = () => {
+    try {
+      const video = webcamRef.current?.video;
+      if (video && video.srcObject) {
+        const stream = video.srcObject as MediaStream;
+        stream.getTracks().forEach((track) => {
+          track.stop();
+          console.log(`[Camera] Track ${track.label} stopped successfully.`);
+        });
+        video.srcObject = null;
+      }
+    } catch (err) {
+      console.error("[Camera] Error stopping media tracks:", err);
+    }
+  };
+
+  // Load COCO SSD model once
+  useEffect(() => {
+    let active = true;
+    setModelMsg("Loading CPU AI Model...");
+
+    getModel()
+      .then((model) => {
+        if (!active || !mountedRef.current) return;
+        modelRef.current = model;
+        setModelState("ready");
+        setModelMsg("✅ AI Core Active (CPU Backend)");
+        setStatusMsg("AI loaded. Start camera to detect vehicles.");
+      })
+      .catch((err: Error) => {
+        if (!active || !mountedRef.current) return;
+        console.error("[TF Load Error]:", err);
+        setModelState("error");
+        setModelMsg(`❌ AI Load Error: ${err.message}`);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // ─── Real-time Throttled Detection Loop ──────────────────────────────────
+  const detect = useCallback(async () => {
+    if (!mountedRef.current || !modelRef.current || lockedRef.current || cooldownSecs > 0) return;
+
+    const video = webcamRef.current?.video;
+    const canvas = canvasRef.current;
+
+    // Check if video frames are ready
+    if (!video || video.readyState !== 4 || video.videoWidth === 0 || !canvas) {
+      if (mountedRef.current && cameraOn && cameraReady && !lockedRef.current && cooldownSecs === 0) {
+        rafRef.current = requestAnimationFrame(detect);
+      }
+      return;
+    }
+
+    // Adaptive CPU performance mode:
+    // Desktop: Run every 200ms
+    // Mobile (Android / iOS): Run every 500ms to save CPU/battery
+    const now = Date.now();
+    const throttleDelay = isMobileDevice ? 500 : 200;
+    if (now - lastDetectionTimeRef.current < throttleDelay) {
+      rafRef.current = requestAnimationFrame(detect);
+      return;
+    }
+    lastDetectionTimeRef.current = now;
+
+    // Ensure canvas dimensions match live video feed
+    if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+    if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    try {
+      // Run COCO SSD object detection
+      const predictions = await modelRef.current.detect(video);
+
+      for (const p of predictions) {
+        const [x, y, w, h] = p.bbox;
+        const isCar = p.class === "car" || p.class === "truck" || p.class === "bus";
+        const scorePct = Math.round(p.score * 100);
+        const color = isCar ? "#00f3ff" : "#ff6b6b";
+        const label = `${p.class === "car" ? "Vehicle" : p.class} ${scorePct}%`;
+
+        // Render high-precision bounding box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, y, w, h);
+
+        // Render details label tag
+        ctx.font = "bold 14px monospace";
+        const tagWidth = ctx.measureText(label).width + 16;
+        const tagY = y > 28 ? y - 28 : y + h + 2;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, tagY, tagWidth, 24);
+        
+        ctx.fillStyle = "#000000";
+        ctx.fillText(label, x + 8, tagY + 16);
+
+        // Auto-assign slot if a car is detected with >= 70% confidence
+        if (isCar && p.score >= 0.70 && !lockedRef.current && cooldownSecs === 0) {
+          lockedRef.current = true;
+          if (rafRef.current) cancelAnimationFrame(rafRef.current);
+          handleCarDetected(p.score);
+          return;
+        }
+      }
+
+      if (!lockedRef.current && mountedRef.current && cooldownSecs === 0) {
+        setStatusMsg(
+          predictions.length > 0
+            ? `Scanning... detected: ${predictions.map((p) => p.class).join(", ")}`
+            : "Scanning for vehicles... Point camera at a car"
+        );
+        rafRef.current = requestAnimationFrame(detect);
+      }
+    } catch (err) {
+      console.error("[Detection Loop Error]:", err);
+      if (!lockedRef.current && mountedRef.current && cameraOn && cooldownSecs === 0) {
+        rafRef.current = requestAnimationFrame(detect);
+      }
+    }
+  }, [cameraOn, cameraReady, isMobileDevice, cooldownSecs]);
+
+  // Launch loop once webcam stream and model are fully loaded
+  useEffect(() => {
+    if (cameraOn && cameraReady && modelState === "ready" && !lockedRef.current && cooldownSecs === 0) {
+      setStatusMsg("Scanning for vehicles...");
+      rafRef.current = requestAnimationFrame(detect);
+    }
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [cameraOn, cameraReady, modelState, detect, cooldownSecs]);
+
+  // Car authorized handler
+  const handleCarDetected = (confidence: number) => {
+    const timestamp = new Date().toISOString();
+    setDetection({ label: "car", confidence, ts: timestamp });
+
+    const slot = assignAiSlot(selectedLocation);
+    if (slot) {
+      setAssignedSlot(slot);
+      addSecurityLog(`AI: car detected (${Math.round(confidence * 100)}%) → slot ${slot.id}`, "medium");
+      setStatusMsg(`✅ Vehicle authorized! Allocated Slot: ${slot.id}`);
+      setIsAnimating(true);
+      
+      // Auto dismiss path assignment animation overlay after 5.5s
+      setTimeout(() => {
+        if (mountedRef.current) setIsAnimating(false);
+      }, 5500);
+    } else {
+      addSecurityLog("AI: car detected — no available slots in selected row structure", "high");
+      setStatusMsg("❌ Car detected — but no slots are available!");
+      setTimeout(resetDetection, 3000);
+    }
+  };
+
+  // Cooldown Debounce Trigger
+  const triggerCooldown = () => {
+    setCooldownSecs(3);
+    setStatusMsg("AI Cooldown Active...");
+    
+    if (cooldownIntervalRef.current) clearInterval(cooldownIntervalRef.current);
+    
+    cooldownIntervalRef.current = setInterval(() => {
+      setCooldownSecs((prev) => {
+        if (prev <= 1) {
+          clearInterval(cooldownIntervalRef.current);
+          lockedRef.current = false;
+          setStatusMsg("AI scanner ready");
+          
+          // Re-render empty canvas frame
+          const canvas = canvasRef.current;
+          if (canvas) {
+            const ctx = canvas.getContext("2d");
+            ctx?.clearRect(0, 0, canvas.width, canvas.height);
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  // Reset scanner & trigger cooldown lockout
+  const resetDetection = () => {
+    setAssignedSlot(null);
+    setDetection(null);
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+    }
+
+    triggerCooldown();
+  };
+
+  // Toggle Camera State
+  const toggleCamera = () => {
+    if (cameraOn) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+      setCameraReady(false);
+      setCameraOn(false);
+      setCameraError(null);
+      
+      // Stop media tracks immediately
+      stopCameraTracks();
+      
+      setAssignedSlot(null);
+      setDetection(null);
+      setStatusMsg("Camera stopped.");
+    } else {
+      const check = checkCameraSupport();
+      if (!check.ok) {
+        setCameraError(check.warning);
+        return;
+      }
+      setCameraError(null);
+      setCameraOn(true);
+      setStatusMsg("Requesting hardware permission...");
+    }
+  };
+
+  // Standard webcam constraints:
+  // Dynamically uses ideal Environment camera on mobile device (rear),
+  // falls back to front User camera on desktops/laptops or where environment is missing.
+  const videoConstraints = {
+    facingMode: isMobileDevice ? { ideal: "environment" } : "user",
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  };
+
+  // Camera permissions & configuration error handler
+  const onCameraError = (err: string | DOMException) => {
+    const errorMsg = typeof err === "string" ? err : err.message ?? String(err);
+    console.error("[Webcam Error Logs]:", errorMsg);
+
+    const checkStr = errorMsg.toLowerCase();
+    if (checkStr.includes("denied") || checkStr.includes("notallowed") || checkStr.includes("permission")) {
+      setCameraError("Camera permission denied.\nPlease toggle permission access in your browser's site options and retry.");
+    } else if (checkStr.includes("notfound") || checkStr.includes("devicenotfound") || checkStr.includes("readable")) {
+      setCameraError("Webcam hardware device not found.\nEnsure your camera is plugged in or available and try again.");
+    } else {
+      setCameraError(`Camera Streaming Error: ${errorMsg}`);
+    }
+    setCameraOn(false);
+    setCameraReady(false);
+    stopCameraTracks();
+  };
+
+  const modelColor = modelState === "ready" ? "text-green-400" : modelState === "error" ? "text-red-400" : "text-yellow-400 animate-pulse";
+
+  return (
+    <main className="min-h-screen p-4 md:p-8 max-w-6xl mx-auto">
+      {/* Compatibility warning block */}
+      {!compatibility.ok && (
+        <div className="mb-6 p-5 glass-panel border border-yellow-500/30 rounded-2xl flex gap-4 bg-yellow-950/20 text-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.05)]">
+          <AlertCircle className="w-8 h-8 flex-shrink-0 animate-bounce" />
+          <div>
+            <h3 className="font-bold text-sm">System Compatibility Notice</h3>
+            <p className="text-xs text-yellow-500/80 mt-1 whitespace-pre-line leading-relaxed">{compatibility.warning}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <div className="mb-8 text-center">
+        <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
+          Real-Time AI <span className="text-[var(--color-neon-blue)] neon-text">Detection</span>
+        </h1>
+        <p className={`text-xs font-mono tracking-wider ${modelColor}`}>
+          {modelMsg}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Camera stream view column */}
+        <div className="lg:col-span-2 flex flex-col gap-4">
+          
+          {/* Top Panel Controls */}
+          <div className="glass-panel p-4 rounded-2xl flex flex-col sm:flex-row gap-4 items-center border border-[var(--color-glass-border)] bg-slate-950/20 backdrop-blur-md">
+            <div className="flex-1 w-full">
+              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider font-mono">Parking Lot</label>
+              <select
+                className="w-full bg-slate-900 border border-[var(--color-glass-border)] p-3 rounded-xl text-white focus:outline-none touch-manipulation cursor-pointer font-sans"
+                value={selectedLocation}
+                onChange={(e) => setSelectedLocation(e.target.value)}
+                disabled={cameraOn}
+              >
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>{loc.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              onClick={toggleCamera}
+              disabled={modelState === "loading" || !compatibility.ok}
+              className={`w-full sm:w-auto px-6 py-4 font-bold rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] touch-manipulation cursor-pointer ${
+                modelState === "loading" || !compatibility.ok
+                  ? "bg-gray-800 text-gray-500 border border-gray-700 cursor-not-allowed"
+                  : cameraOn
+                  ? "bg-red-500/20 text-red-400 border border-red-500/40 hover:bg-red-500/30"
+                  : "bg-[var(--color-neon-blue)] text-white border border-blue-500/50 shadow-[0_0_20px_rgba(0,81,255,0.4)] hover:bg-blue-600"
+              }`}
+            >
+              {modelState === "loading" ? <Loader2 className="w-5 h-5 animate-spin" /> : <Power className="w-5 h-5" />}
+              {modelState === "loading" ? "Initializing AI Engine..." : cameraOn ? "Stop Feed" : "Start Scanner"}
+            </button>
+          </div>
+
+          {/* Camera Viewbox Container */}
+          <div className="relative rounded-2xl overflow-hidden border border-[var(--color-neon-blue)]/40 bg-black aspect-video shadow-[0_0_40px_rgba(0,81,255,0.15)] flex items-center justify-center">
+            
+            {cameraOn && !cameraError && (
+              <>
+                <Webcam
+                  ref={webcamRef}
+                  audio={false}
+                  mirrored={false}
+                  videoConstraints={videoConstraints}
+                  onUserMedia={() => {
+                    setCameraReady(true);
+                    setStatusMsg(modelState === "ready" ? "Camera active. Ready for AI scanning..." : "Camera ready. Model loading...");
+                  }}
+                  onUserMediaError={onCameraError}
+                  className="absolute inset-0 w-full h-full object-cover z-0"
+                />
+                <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover z-10 pointer-events-none" />
+
+                {cameraReady && (
+                  <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 bg-black/70 backdrop-blur-md text-white text-xs px-4 py-2 rounded-full border border-white/10 whitespace-nowrap text-center max-w-[90%] font-mono">
+                    {cooldownSecs > 0 ? `AI COOLDOWN: LOCKOUT FOR ${cooldownSecs}S` : statusMsg.toUpperCase()}
+                  </div>
+                )}
+
+                {cooldownSecs > 0 && (
+                  <div className="absolute inset-0 z-15 bg-black/40 backdrop-blur-[2px] flex items-center justify-center pointer-events-none">
+                    <div className="text-center">
+                      <RefreshCw className="w-10 h-10 text-[var(--color-neon-cyan)] animate-spin-slow mx-auto mb-3" />
+                      <p className="text-[var(--color-neon-cyan)] font-mono text-sm tracking-widest uppercase">System Cool Down: {cooldownSecs}s</p>
+                    </div>
+                  </div>
+                )}
+
+                {!cameraReady && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
+                    <Loader2 className="w-8 h-8 animate-spin text-[var(--color-neon-cyan)] mb-3 mr-2" />
+                    <p className="text-[var(--color-neon-cyan)] animate-pulse font-mono tracking-widest">CONNECTING CAMERA...</p>
+                  </div>
+                )}
+
+                {assignedSlot && (
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20">
+                    <button
+                      onClick={resetDetection}
+                      className="px-6 py-3 bg-white text-black font-bold rounded-full hover:scale-105 transition-all shadow-2xl flex items-center gap-2 cursor-pointer touch-manipulation active:scale-[0.98]"
+                    >
+                      <RefreshCw className="w-4 h-4" /> Scan Another Vehicle
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Inactive idle block */}
+            {!cameraOn && !cameraError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-gray-500 p-6 text-center">
+                <Camera className="w-16 h-16 opacity-30 animate-pulse text-[var(--color-neon-blue)]" />
+                <p className="text-sm font-sans max-w-sm">
+                  {modelState === "loading"
+                    ? "Securing AI Core modules (CPU mode)... Please stand by."
+                    : modelState === "error"
+                    ? "AI Core loaded with errors. Please reload components."
+                    : "Activate the camera scanner to enable automated real-time vehicle allocation."}
+                </p>
+                {modelState === "ready" && (
+                  <span className="text-xs text-green-400 font-mono border border-green-500/20 px-3 py-1 rounded-full bg-green-500/5">
+                    ✅ AI CORE ACTIVE
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Error fallback context */}
+            {cameraError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 px-6 text-center bg-slate-950/95 z-20">
+                <ShieldOff className="w-14 h-14 text-red-500 animate-bounce" />
+                <div className="space-y-1">
+                  <p className="text-red-400 font-semibold text-sm">Hardware Access Blocked</p>
+                  <p className="text-gray-400 text-xs max-w-md whitespace-pre-line leading-relaxed">{cameraError}</p>
+                </div>
+                <button
+                  onClick={() => { setCameraError(null); toggleCamera(); }}
+                  className="px-5 py-2.5 bg-[var(--color-neon-blue)] text-white rounded-xl text-sm font-bold border border-blue-500/50 hover:bg-blue-600 transition touch-manipulation flex items-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(0,81,255,0.3)]"
+                >
+                  <RefreshCw className="w-4 h-4" /> Reset Permission Check
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+
+        {/* AI Details Sidebar */}
+        <div className="glass-panel p-6 rounded-2xl border border-[var(--color-glass-border)] flex flex-col gap-5 bg-slate-950/20 backdrop-blur-md">
+          <h3 className="text-lg font-bold text-white border-b border-gray-800 pb-3 flex items-center gap-2 font-sans">
+            <Scan className="w-5 h-5 text-[var(--color-neon-cyan)]" /> Allocation Hub
+          </h3>
+
+          <div className="space-y-4 flex-1">
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-widest font-mono">Scanner Health</p>
+              <p className={`font-bold text-xs mt-1 tracking-wider ${
+                assignedSlot ? "text-green-400" : cooldownSecs > 0 ? "text-yellow-500 animate-pulse" : cameraOn && cameraReady ? "text-cyan-400 animate-pulse" : "text-gray-500"
+              }`}>
+                {assignedSlot ? "🔒 ALLOCATED" : cooldownSecs > 0 ? "⏸ DEBOUNCE COOLDOWN" : cameraOn && cameraReady ? "🔍 REAL-TIME ALIVE" : "⏸ SYSTEM OFFLINE"}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-widest font-mono">Detected Target</p>
+              <p className="text-white text-sm font-semibold capitalize mt-0.5">{detection?.label ? `${detection.label.toUpperCase()}` : "NONE"}</p>
+            </div>
+
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-widest font-mono mb-2">Verification Score</p>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${detection ? Math.round(detection.confidence * 100) : 0}%`,
+                      background: detection && detection.confidence >= 0.70 ? "var(--color-neon-cyan)" : "#ea580c",
+                    }}
+                  />
+                </div>
+                <span className="text-white font-mono text-sm w-12 text-right">
+                  {detection ? `${Math.round(detection.confidence * 100)}%` : "0%"}
+                </span>
+              </div>
+              <p className="text-[10px] text-gray-600 mt-1.5 font-mono">Confidence must reach ≥70% to trigger allocation.</p>
+            </div>
+
+            {assignedSlot && (
+              <div className="border-t border-gray-800/80 pt-4 space-y-1 animate-pulse">
+                <p className="text-xs text-[var(--color-neon-cyan)] uppercase tracking-widest font-bold">Recommended Slot</p>
+                <p className="text-6xl font-extrabold text-white neon-text font-mono leading-none tracking-tight">{assignedSlot.id}</p>
+              </div>
+            )}
+
+            {/* Clear reset option visible on sidebar during lock */}
+            {assignedSlot && (
+              <button
+                onClick={resetDetection}
+                className="w-full mt-4 py-3 border border-red-500/40 text-red-400 bg-red-500/5 hover:bg-red-500/10 rounded-xl text-xs font-mono font-bold transition flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Force Reset Scanner
+              </button>
+            )}
+          </div>
+
+          <div className="text-[10px] text-gray-700 text-center border-t border-gray-800/60 pt-3 font-mono">
+            COCO-SSD Lite-MobileNetV2 · TensorFlow.js CPU
+          </div>
+        </div>
+      </div>
+
+      {/* ngrok / mobile deployment instructions */}
+      <div className="mt-8 glass-panel p-5 rounded-2xl border border-gray-800/50 bg-slate-950/10">
+        <h4 className="text-sm font-semibold text-white mb-2 flex items-center gap-2 font-sans">
+          <Info className="w-5 h-5 text-[var(--color-neon-cyan)]" /> Automated mobile forwarding
+        </h4>
+        <p className="text-xs text-gray-400 leading-relaxed mb-3">
+          To run verification loops on Android Chrome or iPhones, we offer a dedicated ngrok setup:
+        </p>
+        <ol className="text-[11px] text-gray-500 list-decimal list-inside space-y-1.5 leading-relaxed font-mono">
+          <li>Run <code className="bg-black/60 px-1.5 py-0.5 rounded text-[var(--color-neon-cyan)] font-mono">npm run tunnel</code> in a separate terminal</li>
+          <li>Our helper will spin up ngrok and update <code className="text-white">NEXTAUTH_URL</code> inside <code className="text-white">.env.local</code> automatically</li>
+          <li>Add the new temporary HTTPS ngrok redirect link to Google Console</li>
+          <li>Load the ngrok HTTPS link on your phone. Hardware cameras will open instantly.</li>
+        </ol>
+      </div>
+
+      {/* Path assign animated simulation overlays */}
+      <AnimatePresence>
+        {isAnimating && assignedSlot && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl flex flex-col items-center justify-center p-6"
+          >
+            <motion.div
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ type: "spring", bounce: 0.5 }}
+              className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border-2 border-green-500"
+            >
+              <CheckCircle className="w-10 h-10 text-green-400" />
+            </motion.div>
+
+            <h2 className="text-3xl md:text-5xl font-bold text-white mb-2 text-center tracking-tight">Vehicle Authorized</h2>
+            <p className="text-gray-400 text-base mb-10 text-center font-sans">Allocating Smart Parking Slot & Mapping Safe Route</p>
+
+            <div className="relative w-full max-w-2xl h-56 bg-slate-900 border border-gray-700/80 rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,243,255,0.08)] bg-radial-path">
+              {/* Automated Entry gate */}
+              <div className="absolute left-5 top-1/2 -translate-y-1/2 w-2.5 h-20 bg-gray-600 rounded-full">
+                <motion.div
+                  initial={{ scaleY: 1 }}
+                  animate={{ scaleY: 0.1 }}
+                  transition={{ duration: 0.8, delay: 0.5 }}
+                  style={{ transformOrigin: "bottom" }}
+                  className="absolute bottom-0 left-0 w-full h-14 bg-yellow-500 rounded-full"
+                />
+              </div>
+
+              {/* Dynamic pathway svg route */}
+              <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
+                <motion.path
+                  d="M 40 112 L 190 112 L 190 56 L 500 56"
+                  fill="none"
+                  stroke="#00f3ff"
+                  strokeWidth="3.5"
+                  strokeDasharray="14 10"
+                  initial={{ pathLength: 0 }}
+                  animate={{ pathLength: 1 }}
+                  transition={{ duration: 2.2, delay: 1.2, ease: "easeInOut" }}
+                />
+              </svg>
+
+              {/* Allocated Slot zone */}
+              <motion.div
+                initial={{ backgroundColor: "rgba(34,197,94,0.15)", borderColor: "rgba(34,197,94,0.3)" }}
+                animate={{ backgroundColor: "rgba(255,0,60,0.25)", borderColor: "rgba(255,0,60,0.9)", boxShadow: "0 0 30px rgba(255,0,60,0.6)" }}
+                transition={{ duration: 0.6, delay: 3.4 }}
+                className="absolute right-10 top-8 w-24 h-16 border-2 rounded-lg flex items-center justify-center"
+              >
+                <span className="text-white font-extrabold text-2xl font-mono">{assignedSlot.id}</span>
+              </motion.div>
+
+              {/* Autonomous vehicle representation */}
+              <motion.div
+                initial={{ x: 8, y: 96 }}
+                animate={{ x: [8, 175, 175, 480], y: [96, 96, 38, 38] }}
+                transition={{ duration: 2.7, delay: 1.2, ease: "easeInOut" }}
+                className="absolute w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-2xl border border-gray-200"
+              >
+                <Car className="w-6 h-6 text-black" />
+              </motion.div>
+            </div>
+
+            <p className="mt-8 text-[var(--color-neon-cyan)] animate-pulse font-mono tracking-widest text-sm uppercase">
+              MAPPING AUTONOMOUS ROUTE TO SLOT {assignedSlot.id}...
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </main>
+  );
+}
+
+export default function CameraPage() {
+  return (
+    <ErrorBoundary>
+      <CameraController />
+    </ErrorBoundary>
+  );
+}
