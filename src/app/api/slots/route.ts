@@ -1,54 +1,81 @@
-import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { NextResponse } from "next/server";
+import { getDatabase } from "@/lib/mongo-db";
+import { requireAdmin } from "@/lib/auth-server";
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const placeId = searchParams.get('placeId');
+  try {
+    const { searchParams } = new URL(request.url);
+    const placeId = searchParams.get("placeId");
 
-  if (!placeId) {
-    return NextResponse.json({ error: 'placeId is required' }, { status: 400 });
+    if (!placeId) {
+      return NextResponse.json({ error: "placeId is required" }, { status: 400 });
+    }
+
+    const database = await getDatabase();
+    const slots = await database
+      .collection("parking_slots")
+      .find({ parkingPlaceId: placeId })
+      .sort({ slotId: 1 })
+      .toArray();
+
+    return NextResponse.json(slots);
+  } catch (error) {
+    console.error("GET /api/slots ERROR:", error);
+    return NextResponse.json({ error: String(error) }, { status: 500 });
   }
-
-  const place = db.parkingPlaces.find(p => p.id === placeId);
-  if (!place) {
-    return NextResponse.json({ error: 'Parking place not found' }, { status: 404 });
-  }
-
-  return NextResponse.json(place.slots);
 }
 
 export async function PUT(request: Request) {
+  const auth = await requireAdmin();
+  if (auth instanceof NextResponse) return auth;
+
   try {
     const body = await request.json();
-    const { placeId, slotId, status, vehicleId } = body;
+    const { placeId, slotId, status, vehicleId, vehicleType } = body;
 
-    const place = db.parkingPlaces.find(p => p.id === placeId);
-    if (!place) return NextResponse.json({ error: 'Place not found' }, { status: 404 });
+    const database = await getDatabase();
 
-    const slot = place.slots.find(s => s.id === slotId);
-    if (!slot) return NextResponse.json({ error: 'Slot not found' }, { status: 404 });
+    const query: { slotId: string; parkingPlaceId?: string } = { slotId };
+    if (placeId) query.parkingPlaceId = placeId;
 
-    slot.status = status;
-    if (status === 'occupied') {
-      slot.vehicleId = vehicleId;
-      slot.entryTime = new Date().toISOString();
-      if (vehicleId) {
-        db.vehicles.push({
-          vehicleId,
-          parkingPlaceId: placeId,
-          slotId,
-          entryTime: slot.entryTime
-        });
-      }
-    } else if (status === 'available') {
-      slot.vehicleId = undefined;
-      slot.entryTime = undefined;
-      // remove from vehicles array
-      db.vehicles = db.vehicles.filter(v => v.slotId !== slotId);
+    const slot = await database.collection("parking_slots").findOne(query);
+    if (!slot) {
+      return NextResponse.json({ success: false, error: "Slot not found" }, { status: 404 });
     }
 
-    return NextResponse.json(slot);
+    // Build update payload for the slot document only.
+    // NOTE: parking_sessions are created by POST /api/slots/assign — NOT here.
+    // The vehicles collection stores ownership records only.
+    const updateData: {
+      status: string;
+      vehicleId?: string | null;
+      vehicleType?: string | null;
+      entryTime?: Date | null;
+    } = { status };
+
+    if (status === "occupied") {
+      updateData.vehicleId = vehicleId || null;
+      updateData.vehicleType = vehicleType || null;
+      updateData.entryTime = new Date();
+    } else {
+      // Slot is being freed — clear occupancy fields
+      updateData.vehicleId = null;
+      updateData.vehicleType = null;
+      updateData.entryTime = null;
+    }
+
+    await database
+      .collection("parking_slots")
+      .updateOne({ _id: slot._id }, { $set: updateData });
+
+    const updatedSlot = await database
+      .collection("parking_slots")
+      .findOne({ _id: slot._id });
+
+    return NextResponse.json({ success: true, slot: updatedSlot });
   } catch (error) {
-    return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+    console.error("PUT /api/slots ERROR:", error);
+    return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
   }
 }
+

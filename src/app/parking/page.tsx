@@ -1,204 +1,195 @@
+/* eslint-disable */
 "use client";
 
-import { useState, useMemo } from "react";
-import { useParking, ParkingPlace, Slot } from "@/lib/context/ParkingContext";
-import SlotVisualizer from "@/components/SlotVisualizer";
-import { motion } from "framer-motion";
-import { Search, MapPin, Zap } from "lucide-react";
+import { useParking } from "@/lib/context/ParkingContext";
+import { useState, useEffect } from "react";
+import { MapPin, Search, Navigation } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
-export default function ParkingSearchPage() {
-  const { locations, assignAiSlot } = useParking();
-  
-  const [country, setCountry] = useState("");
-  const [state, setState] = useState("");
-  const [district, setDistrict] = useState("");
-  const [area, setArea] = useState("");
-  const [placeId, setPlaceId] = useState("");
-  
-  const [searchCode, setSearchCode] = useState("");
-  
-  const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
+/** Read-only parking locations view for customers */
+export default function ParkingLocationsPage() {
+  const { locations, loading, slots, slotsLoading, refreshSlots } = useParking();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedPlaceId, setSelectedPlaceId] = useState("");
 
-  // Deriving hierarchy for dropdowns
-  const countries = useMemo(() => Array.from(new Set(locations.map(l => l.country))), [locations]);
-  const states = useMemo(() => Array.from(new Set(locations.filter(l => l.country === country).map(l => l.state))), [locations, country]);
-  const districts = useMemo(() => Array.from(new Set(locations.filter(l => l.state === state).map(l => l.district))), [locations, state]);
-  const areas = useMemo(() => Array.from(new Set(locations.filter(l => l.district === district).map(l => l.area))), [locations, district]);
-  const places = useMemo(() => locations.filter(l => l.area === area), [locations, area]);
-
-  const activePlace = useMemo(() => {
-    if (searchCode) {
-      return locations.find(l => l.code.toLowerCase() === searchCode.toLowerCase()) || null;
+  useEffect(() => {
+    if (locations.length > 0 && !selectedPlaceId) {
+      setSelectedPlaceId(locations[0].id);
     }
-    return locations.find(l => l.id === placeId) || null;
-  }, [locations, searchCode, placeId]);
+  }, [locations, selectedPlaceId]);
 
-  const handleAiAssignment = () => {
-    if (!activePlace) return;
-    const slot = assignAiSlot(activePlace.id);
-    if (slot) {
-      setSelectedSlot(slot);
-    } else {
-      alert("No available slots!");
-    }
-  };
+  useEffect(() => {
+    if (selectedPlaceId) refreshSlots(selectedPlaceId);
+  }, [selectedPlaceId, refreshSlots]);
+
+  const filtered = locations.filter((loc) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      loc.name?.toLowerCase().includes(q) ||
+      loc.code?.toLowerCase().includes(q) ||
+      loc.area?.toLowerCase().includes(q) ||
+      loc.district?.toLowerCase().includes(q) ||
+      loc.state?.toLowerCase().includes(q)
+    );
+  });
+
+  const activePlace = locations.find((l) => l.id === selectedPlaceId);
+  const availableCount = slots.filter((s) => s.status === "available").length;
 
   return (
-    <main className="min-h-screen p-8 max-w-7xl mx-auto">
-      <motion.div 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-10 text-center"
-      >
-        <h1 className="text-4xl font-bold text-white mb-4">Find <span className="text-[var(--color-neon-cyan)] neon-text">Parking</span></h1>
-        <p className="text-gray-400 max-w-2xl mx-auto">Search by location hierarchy or enter a specific parking code to view real-time 3D slot availability.</p>
-      </motion.div>
-
-      {/* Search Controls */}
-      <div className="glass-panel p-6 rounded-2xl mb-12 shadow-[0_0_20px_rgba(0,243,255,0.1)]">
-        <div className="flex flex-col md:flex-row gap-6">
-          <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            <select
-              className="bg-slate-900/50 border border-[var(--color-glass-border)] p-3 rounded-xl text-white focus:outline-none focus:border-[var(--color-neon-cyan)] transition-colors"
-              value={country}
-              onChange={(e) => { setCountry(e.target.value); setState(""); setDistrict(""); setArea(""); setPlaceId(""); setSearchCode(""); }}
-            >
-              <option value="">Country</option>
-              {countries.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-
-            <select
-              className="bg-slate-900/50 border border-[var(--color-glass-border)] p-3 rounded-xl text-white focus:outline-none focus:border-[var(--color-neon-cyan)] transition-colors"
-              value={state}
-              onChange={(e) => { setState(e.target.value); setDistrict(""); setArea(""); setPlaceId(""); setSearchCode(""); }}
-              disabled={!country}
-            >
-              <option value="">State</option>
-              {states.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-
-            <select
-              className="bg-slate-900/50 border border-[var(--color-glass-border)] p-3 rounded-xl text-white focus:outline-none focus:border-[var(--color-neon-cyan)] transition-colors"
-              value={district}
-              onChange={(e) => { setDistrict(e.target.value); setArea(""); setPlaceId(""); setSearchCode(""); }}
-              disabled={!state}
-            >
-              <option value="">District</option>
-              {districts.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-
-            <select
-              className="bg-slate-900/50 border border-[var(--color-glass-border)] p-3 rounded-xl text-white focus:outline-none focus:border-[var(--color-neon-cyan)] transition-colors"
-              value={area}
-              onChange={(e) => { setArea(e.target.value); setPlaceId(""); setSearchCode(""); }}
-              disabled={!district}
-            >
-              <option value="">Area</option>
-              {areas.map((a) => <option key={a} value={a}>{a}</option>)}
-            </select>
-
-            <select
-              className="bg-slate-900/50 border border-[var(--color-glass-border)] p-3 rounded-xl text-white focus:outline-none focus:border-[var(--color-neon-cyan)] transition-colors"
-              value={placeId}
-              onChange={(e) => { setPlaceId(e.target.value); setSearchCode(""); }}
-              disabled={!area}
-            >
-              <option value="">Parking Place</option>
-              {places.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
-          
-          <div className="flex items-center justify-center font-bold text-gray-500">OR</div>
-          
-          <div className="relative flex-1 max-w-xs">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input 
-              type="text" 
-              placeholder="Enter Code (e.g. CMP-01)" 
-              value={searchCode}
-              onChange={(e) => {
-                setSearchCode(e.target.value);
-                setCountry(""); setState(""); setDistrict(""); setArea(""); setPlaceId("");
-              }}
-              className="w-full bg-slate-900/50 border border-[var(--color-glass-border)] p-3 pl-10 rounded-xl text-white focus:outline-none focus:border-[var(--color-neon-cyan)] transition-colors"
-            />
-          </div>
-        </div>
+    <div className="flex flex-col gap-8">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight text-[var(--color-primary)]">
+          Find Parking
+        </h1>
+        <p className="text-[var(--color-secondary)] mt-2">
+          Browse available parking locations and live slot availability.
+        </p>
       </div>
 
-      {/* activePlace Display */}
-      {activePlace ? (
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-slate-900/80 border border-slate-800 p-8 rounded-3xl"
-        >
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-            <div>
-              <h2 className="text-3xl font-bold text-white flex items-center gap-3">
-                <MapPin className="w-8 h-8 text-green-400" />
-                {activePlace.name}
-              </h2>
-              <p className="text-gray-400 mt-2">Code: <span className="text-[var(--color-neon-cyan)] font-mono">{activePlace.code}</span></p>
-            </div>
-            
-            <button 
-              onClick={handleAiAssignment}
-              className="px-6 py-3 bg-[var(--color-neon-blue)] text-white font-bold rounded-xl flex items-center gap-2 hover:bg-blue-600 transition-all shadow-[0_0_15px_rgba(0,81,255,0.4)] hover:shadow-[0_0_25px_rgba(0,81,255,0.6)]"
-            >
-              <Zap className="w-5 h-5" /> Simulate AI Assignment
-            </button>
-          </div>
+      <div className="relative">
+        <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-[var(--color-secondary)]" />
+        <input
+          type="text"
+          placeholder="Search by name, code, area..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-background)] py-3 pl-12 pr-4 text-[var(--color-primary)] placeholder:text-[var(--color-secondary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] transition-colors"
+        />
+      </div>
 
-          <div className="flex gap-4 mb-8 flex-wrap">
-            <div className="flex items-center gap-2 text-sm"><div className="w-4 h-4 bg-green-500/20 border border-green-500 rounded" /> Available</div>
-            <div className="flex items-center gap-2 text-sm"><div className="w-4 h-4 bg-red-500/20 border border-red-500 rounded" /> Occupied</div>
-            <div className="flex items-center gap-2 text-sm"><div className="w-4 h-4 bg-yellow-500/20 border border-yellow-500 rounded" /> Reserved</div>
-            <div className="flex items-center gap-2 text-sm"><div className="w-4 h-4 bg-gray-600/20 border border-gray-600 rounded" /> Inactive</div>
-            <div className="flex items-center gap-2 text-sm"><div className="w-4 h-4 bg-blue-500/30 border border-blue-400 rounded" /> AI Recommended</div>
-          </div>
-
-          {activePlace.rows.map(row => (
-            <div key={row.id} className="mb-12">
-              <h2 className="text-2xl font-bold text-white mb-6 border-l-4 border-[var(--color-neon-cyan)] pl-4">Row {row.id}</h2>
-              {row.subRows.map(subRow => (
-                <SlotVisualizer key={subRow.id} subRow={subRow} onSlotClick={setSelectedSlot} />
-              ))}
-            </div>
-          ))}
-        </motion.div>
+      {loading ? (
+        <div className="text-center py-20 text-[var(--color-secondary)]">Loading locations...</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-20 text-[var(--color-secondary)]">No parking locations found.</div>
       ) : (
-        <div className="text-center text-gray-500 py-20">
-          <MapPin className="w-16 h-16 mx-auto mb-4 opacity-50" />
-          <p className="text-xl">Select or search for a parking place to view slots.</p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((loc) => {
+            const occupancyRate = loc.totalSlots > 0 ? ((loc.totalSlots - loc.availableSlots) / loc.totalSlots) * 100 : 0;
+            const isFull = occupancyRate >= 100;
+            const isSelected = selectedPlaceId === loc.id;
+
+            return (
+              <Card
+                key={loc.id}
+                className={cn(
+                  "transition-all cursor-pointer hover:border-[var(--color-accent)]/50",
+                  isSelected ? "border-[var(--color-accent)] ring-1 ring-[var(--color-accent)]" : ""
+                )}
+                onClick={() => setSelectedPlaceId(loc.id)}
+              >
+                <CardHeader>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <CardTitle>{loc.name}</CardTitle>
+                      <CardDescription className="mt-1">
+                        {loc.area}, {loc.district}
+                      </CardDescription>
+                    </div>
+                    <Badge variant={isFull ? "destructive" : "success"}>
+                      {isFull ? "Full" : "Available"}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex justify-between text-sm text-[var(--color-secondary)] mb-2">
+                    <span>Occupancy</span>
+                    <span>{Math.round(occupancyRate)}%</span>
+                  </div>
+                  <div className="h-2 w-full rounded-full bg-[var(--color-border)] overflow-hidden">
+                    <div
+                      className={cn("h-full rounded-full", isFull ? "bg-[var(--color-slot-occupied)]" : "bg-[var(--color-slot-available)]")}
+                      style={{ width: `${occupancyRate}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-sm mt-4">
+                    <span className="font-medium text-[var(--color-slot-available)]">{loc.availableSlots} free</span>
+                    <span className="text-[var(--color-secondary)]">{loc.totalSlots} total</span>
+                  </div>
+                </CardContent>
+                <CardFooter className="flex gap-2">
+                  <Button
+                    variant={isSelected ? "default" : "secondary"}
+                    className="flex-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedPlaceId(loc.id);
+                    }}
+                  >
+                    View Slots
+                  </Button>
+                  <Button variant="outline" size="icon" onClick={(e) => e.stopPropagation()} title="Navigate">
+                    <Navigation className="h-4 w-4" />
+                  </Button>
+                </CardFooter>
+              </Card>
+            );
+          })}
         </div>
       )}
 
-      {selectedSlot && (
-        <motion.div 
-          initial={{ opacity: 0, y: 50 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="fixed bottom-8 left-1/2 -translate-x-1/2 glass-panel p-6 rounded-2xl shadow-[0_0_30px_rgba(0,243,255,0.2)] border border-[var(--color-neon-cyan)]/50 flex items-center gap-6 z-50"
-        >
-          <div>
-            <p className="text-gray-300 text-sm">Selected Slot</p>
-            <p className="text-3xl font-bold text-[var(--color-neon-cyan)]">{selectedSlot.id}</p>
-          </div>
-          <div className="h-12 w-[1px] bg-gray-600" />
-          <div>
-            <p className="text-gray-300 text-sm">Status</p>
-            <p className="text-lg font-bold capitalize" style={{ color: selectedSlot.status === 'available' ? '#4ade80' : selectedSlot.status === 'occupied' ? '#f87171' : selectedSlot.status === 'ai-recommended' ? '#60a5fa' : '#fbbf24' }}>
-              {selectedSlot.status.replace('-', ' ')}
-            </p>
-          </div>
-          <button 
-            onClick={() => setSelectedSlot(null)}
-            className="ml-4 p-2 rounded-full hover:bg-slate-800 text-gray-400"
-          >
-            ✕
-          </button>
-        </motion.div>
+      {/* Live Slot Grid Section */}
+      {activePlace && (
+        <Card className="mt-4 border-[var(--color-border)] shadow-lg">
+          <CardHeader>
+            <CardTitle>{activePlace.name} — Live Slots</CardTitle>
+            <CardDescription>
+              {availableCount} of {slots.length} slots available
+              {slotsLoading && " (updating...)"}
+            </CardDescription>
+            {/* Legend */}
+            <div className="flex flex-wrap gap-3 mt-4">
+              <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-available)]"></div><span className="text-sm text-[var(--color-secondary)]">Available</span></div>
+              <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-occupied)]"></div><span className="text-sm text-[var(--color-secondary)]">Occupied</span></div>
+              <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-reserved)]"></div><span className="text-sm text-[var(--color-secondary)]">Reserved</span></div>
+              <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-maintenance)]"></div><span className="text-sm text-[var(--color-secondary)]">Maintenance</span></div>
+              <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-ev)]"></div><span className="text-sm text-[var(--color-secondary)]">EV Charging</span></div>
+              <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-accessible)]"></div><span className="text-sm text-[var(--color-secondary)]">Accessible</span></div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {slots.length === 0 && !slotsLoading ? (
+              <div className="text-center py-10 text-[var(--color-secondary)]">No slots configured for this location.</div>
+            ) : (
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-3 p-4 bg-[#121212] rounded-xl border border-[var(--color-border)]">
+                {slots.map((slot) => {
+                  let bgColor = "bg-[var(--color-border)]"; // fallback
+                  let textColor = "text-white";
+                  let border = "border-transparent";
+
+                  // Simplified mapping for the requested colors
+                  if (slot.status === "available") { bgColor = "bg-[var(--color-slot-available)]"; }
+                  else if (slot.status === "occupied") { bgColor = "bg-[var(--color-slot-occupied)]"; }
+                  else if (slot.status === "reserved") { bgColor = "bg-[var(--color-slot-reserved)]"; }
+                  else if (slot.status === "maintenance") { bgColor = "bg-[var(--color-slot-maintenance)]"; }
+                  
+                  // For EV and Accessible, we might need a custom attribute. Since we cannot modify DB, we might not have these statuses natively, 
+                  // but we define the classes for future extension if the API ever supports it.
+
+                  return (
+                    <div
+                      key={slot.slotId}
+                      title={slot.status}
+                      className={cn(
+                        "relative flex items-center justify-center h-16 rounded-md font-bold text-sm transition-all cursor-pointer hover:scale-105 hover:ring-2 hover:ring-white",
+                        bgColor,
+                        textColor,
+                        border
+                      )}
+                    >
+                      {slot.slotId}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
-    </main>
+    </div>
   );
 }

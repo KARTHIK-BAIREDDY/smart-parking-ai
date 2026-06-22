@@ -1,73 +1,73 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { SubRow, Slot } from "@/lib/context/ParkingContext";
-import clsx from "clsx";
-import { twMerge } from "tailwind-merge";
+import { Row } from "@/lib/context/ParkingContext";
+import { cn } from "@/lib/utils";
 
-interface SlotVisualizerProps {
-  subRow: SubRow;
-  onSlotClick?: (slot: Slot) => void;
-}
-
-export default function SlotVisualizer({ subRow, onSlotClick }: SlotVisualizerProps) {
-  const getStatusColor = (status: string) => {
+export default function SlotVisualizer({ rows }: { rows: Row[] }) {
+  const getSlotStyle = (status: string) => {
     switch (status) {
       case "available":
-        return "bg-green-500/20 border-green-500 text-green-400 shadow-[0_0_10px_rgba(34,197,94,0.3)]";
+        return "bg-[var(--color-slot-available)] text-white border-transparent";
       case "occupied":
-        return "bg-red-500/20 border-red-500 text-red-400 shadow-[0_0_10px_rgba(239,68,68,0.3)]";
+        return "bg-[var(--color-slot-occupied)] text-white border-transparent";
       case "reserved":
-        return "bg-yellow-500/20 border-yellow-500 text-yellow-400 shadow-[0_0_10px_rgba(234,179,8,0.3)]";
-      case "inactive":
-        return "bg-gray-600/20 border-gray-600 text-gray-400 opacity-50";
-      case "ai-recommended":
-        return "bg-blue-500/30 border-blue-400 text-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.8)] animate-pulse";
+        return "bg-[var(--color-slot-reserved)] text-white border-transparent";
+      case "maintenance":
+        return "bg-[var(--color-slot-maintenance)] text-white border-transparent";
+      case "ev":
+        return "bg-[var(--color-slot-ev)] text-white border-transparent";
+      case "accessible":
+        return "bg-[var(--color-slot-accessible)] text-white border-transparent";
       default:
-        return "bg-gray-500 border-gray-400";
+        return "bg-[var(--color-border)] text-[var(--color-primary)] border-transparent";
     }
   };
 
   return (
-    <div className="mb-10">
-      <h3 className="text-xl font-semibold mb-4 text-[var(--color-neon-cyan)] flex items-center gap-2">
-        Sub-Row {subRow.id}
-        <div className="h-[1px] flex-1 bg-gradient-to-r from-[var(--color-neon-cyan)]/50 to-transparent" />
-      </h3>
-      
-      {/* 3D perspective wrapper with horizontal scroll for mobile */}
-      <div className="perspective-1000 overflow-x-auto pb-8 -mx-4 px-4 sm:mx-0 sm:px-0">
-        <div className="min-w-[600px] md:min-w-0 grid grid-cols-5 md:grid-cols-10 gap-3 md:gap-4 rotate-x-12">
-          {subRow.slots.map((slot) => (
-            <motion.button
-              key={slot.id}
-              onClick={() => onSlotClick?.(slot)}
-              whileHover={{ 
-                scale: 1.1,
-                z: 20,
-                rotateX: 0,
-                boxShadow: "0px 10px 20px rgba(0,255,255,0.4)" 
-              }}
-              whileTap={{ scale: 0.95 }}
-              className={twMerge(
-                clsx(
-                  "relative h-16 md:h-20 rounded-xl border-2 flex items-center justify-center font-bold text-base md:text-lg transition-colors backdrop-blur-sm",
-                  getStatusColor(slot.status)
-                )
-              )}
-            >
-              {slot.id.split("-")[1]}
-              
-              {/* Optional vehicle number display */}
-              {slot.vehicleNo && (
-                <span className="absolute bottom-1 text-[0.5rem] md:text-[0.6rem] font-mono tracking-widest text-white/70">
-                  {slot.vehicleNo}
-                </span>
-              )}
-            </motion.button>
-          ))}
-        </div>
+    <div className="flex flex-col gap-6">
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-sm">
+        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-available)]"></div><span className="text-sm font-medium text-[var(--color-secondary)]">Available</span></div>
+        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-occupied)]"></div><span className="text-sm font-medium text-[var(--color-secondary)]">Occupied</span></div>
+        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-reserved)]"></div><span className="text-sm font-medium text-[var(--color-secondary)]">Reserved</span></div>
+        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-maintenance)]"></div><span className="text-sm font-medium text-[var(--color-secondary)]">Maintenance</span></div>
+        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-ev)]"></div><span className="text-sm font-medium text-[var(--color-secondary)]">EV Charging</span></div>
+        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-[var(--color-slot-accessible)]"></div><span className="text-sm font-medium text-[var(--color-secondary)]">Accessible</span></div>
       </div>
+
+      {/* Grid */}
+      {rows.map(row => (
+        <div key={row.id} className="bg-[var(--color-card)] p-6 rounded-2xl border border-[var(--color-border)] shadow-sm">
+          <h3 className="text-lg font-bold text-[var(--color-primary)] mb-4 tracking-tight">Row {row.id}</h3>
+          <div className="flex flex-col gap-6">
+            {row.subRows.map(subRow => (
+              <div key={subRow.id} className="flex flex-col sm:flex-row gap-4 sm:items-center bg-[var(--color-background)] p-4 rounded-xl border border-[var(--color-border)]">
+                <span className="font-bold text-[var(--color-secondary)] w-12 shrink-0">{subRow.id}</span>
+                <div className="grid grid-cols-4 sm:flex sm:flex-wrap gap-3 w-full">
+                  {subRow.slots.map(slot => (
+                    <div
+                      key={slot.id}
+                      className={cn(
+                        "relative flex flex-col items-center justify-center w-full sm:w-16 h-20 rounded-lg border-2 text-xs font-bold transition-all cursor-pointer",
+                        "hover:scale-105 hover:ring-2 hover:ring-white hover:z-10 shadow-sm",
+                        getSlotStyle(slot.status)
+                      )}
+                      title={`Slot ${slot.id} - ${slot.status}`}
+                    >
+                      <span className="text-sm">{slot.id.split('-').pop()}</span>
+                      {slot.vehicleId && (
+                        <span className="absolute bottom-2 left-1/2 -translate-x-1/2 w-11/12 truncate text-[9px] font-medium bg-black/40 px-1 py-0.5 rounded text-center">
+                          {slot.vehicleId}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

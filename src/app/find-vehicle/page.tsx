@@ -1,120 +1,97 @@
 "use client";
 
+import { useParking, ParkingPlace } from "@/lib/context/ParkingContext";
+import { Search, Navigation } from "lucide-react";
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { Search, Car, MapPin, Clock, ArrowRight } from "lucide-react";
-import { useParking, ParkingPlace, Slot } from "@/lib/context/ParkingContext";
 import Link from "next/link";
 
 export default function FindVehiclePage() {
-  const { findVehicle } = useParking();
-  const [vehicleNo, setVehicleNo] = useState("");
-  const [result, setResult] = useState<{ location: ParkingPlace; slot: Slot } | null>(null);
-  const [hasSearched, setHasSearched] = useState(false);
+  const { locations } = useParking();
+  const [search, setSearch] = useState("");
+  const [result, setResult] = useState<{ place: ParkingPlace; slotId: string } | null>(null);
+  const [searched, setSearched] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!vehicleNo.trim()) return;
-    
-    setHasSearched(true);
-    const found = findVehicle(vehicleNo.trim());
-    setResult(found);
+    if (!search.trim()) return;
+    setSearched(true);
+    setLoading(true);
+    setResult(null);
+
+    const query = search.toLowerCase();
+
+    try {
+      let foundSlot = null;
+      let foundPlace = null;
+
+      for (const place of locations) {
+        const res = await fetch(`/api/slots?placeId=${place.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          console.log("Slots API Response:", data);
+          const slots = Array.isArray(data) ? data : data.slots || [];
+          const found = slots.find((s: any) => s.vehicleId && s.vehicleId.toLowerCase() === query);
+          if (found) {
+            foundSlot = found.slotId;
+            foundPlace = place;
+            break;
+          }
+        }
+      }
+
+      if (foundPlace && foundSlot) {
+        setResult({ place: foundPlace, slotId: foundSlot });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <main className="min-h-screen p-8 max-w-4xl mx-auto flex flex-col items-center">
-      <motion.div 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-12 text-center w-full"
-      >
-        <h1 className="text-4xl font-bold text-white mb-4">
-          Locate Your <span className="text-[var(--color-neon-cyan)] neon-text">Vehicle</span>
+    <main className="min-h-screen p-8 max-w-3xl mx-auto flex flex-col items-center justify-center">
+      <Link href="/" className="text-gray-400 self-start mb-8 hover:text-white">← Back to Home</Link>
+      
+      <div className="w-full bg-slate-900 border border-cyan-500/30 rounded-3xl p-8 shadow-[0_0_40px_rgba(0,243,255,0.1)]">
+        <h1 className="text-3xl font-bold text-white mb-6 flex items-center justify-center gap-3">
+          <Search className="text-cyan-400" /> Find Vehicle
         </h1>
-        <p className="text-gray-400">Enter your license plate number to find exactly where you parked.</p>
-      </motion.div>
-
-      <form onSubmit={handleSearch} className="w-full max-w-2xl relative mb-12 group">
-        <div className="absolute inset-0 bg-[var(--color-neon-cyan)]/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
-        <div className="relative flex glass-panel rounded-full p-2 border border-[var(--color-neon-cyan)]/30 focus-within:border-[var(--color-neon-cyan)] shadow-[0_0_20px_rgba(0,243,255,0.1)]">
-          <div className="pl-6 flex items-center justify-center">
-            <Car className="w-6 h-6 text-gray-400" />
-          </div>
-          <input 
-            type="text" 
-            placeholder="e.g., KA-01-AB-1234" 
-            value={vehicleNo}
-            onChange={(e) => setVehicleNo(e.target.value)}
-            className="flex-1 bg-transparent border-none outline-none text-white px-6 py-4 text-xl font-mono uppercase placeholder-gray-600"
+        
+        <form onSubmit={handleSearch} className="flex gap-4 mb-8">
+          <input
+            type="text"
+            placeholder="Enter Vehicle Plate Number"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-slate-800 border border-slate-700 p-4 rounded-xl text-white focus:border-cyan-400 outline-none text-lg uppercase"
           />
-          <button 
-            type="submit"
-            className="bg-[var(--color-neon-cyan)] text-black px-8 py-3 rounded-full font-bold hover:scale-105 transition-transform flex items-center gap-2"
-          >
-            <Search className="w-5 h-5" /> Find
+          <button type="submit" disabled={loading} className="bg-cyan-400 text-black font-bold px-8 rounded-xl hover:bg-cyan-300 transition disabled:opacity-50">
+            {loading ? "Searching..." : "Search"}
           </button>
-        </div>
-      </form>
+        </form>
 
-      {hasSearched && (
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-2xl"
-        >
-          {result ? (
-            <div className="glass-panel p-8 rounded-3xl border border-[var(--color-glass-border)] shadow-[0_0_30px_rgba(0,0,0,0.5)]">
-              <div className="flex items-center gap-4 mb-8 pb-8 border-b border-gray-800">
-                <div className="w-16 h-16 rounded-2xl bg-green-500/20 text-green-400 flex items-center justify-center border border-green-500/50 shadow-[0_0_15px_rgba(34,197,94,0.3)]">
-                  <Car className="w-8 h-8" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-400 uppercase tracking-widest">Vehicle Found</p>
-                  <p className="text-3xl font-mono font-bold text-white uppercase">{result.slot.vehicleNo}</p>
+        {searched && !loading && (
+          <div className="mt-8">
+            {result ? (
+              <div className="bg-green-500/10 border border-green-500/30 p-6 rounded-2xl flex flex-col items-center text-center">
+                <Navigation className="w-12 h-12 text-green-400 mb-4" />
+                <h2 className="text-2xl font-bold text-white mb-2">Vehicle Found!</h2>
+                <p className="text-gray-300 text-lg mb-4">Your vehicle <span className="font-bold text-cyan-400 uppercase">{search}</span> is parked at:</p>
+                <div className="bg-slate-950 px-8 py-4 rounded-xl border border-slate-800 inline-block text-left">
+                  <p className="text-gray-400"><span className="text-white w-24 inline-block">Location:</span> {result.place.name}</p>
+                  <p className="text-gray-400"><span className="text-white w-24 inline-block">Slot:</span> <strong className="text-green-400 text-xl">{result.slotId}</strong></p>
                 </div>
               </div>
-
-              <div className="grid grid-cols-2 gap-8 mb-8">
-                <div>
-                  <p className="text-gray-400 text-sm mb-2 flex items-center gap-2">
-                    <MapPin className="w-4 h-4" /> Location
-                  </p>
-                  <p className="text-xl text-white font-medium">{result.location.name}</p>
-                  <p className="text-sm text-gray-500 mt-1">{result.location.area}, {result.location.district}</p>
-                </div>
-                <div>
-                  <p className="text-gray-400 text-sm mb-2 flex items-center gap-2">
-                    <Clock className="w-4 h-4" /> Entry Time
-                  </p>
-                  <p className="text-xl text-white font-medium">
-                    {result.slot.entryTime ? new Date(result.slot.entryTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
-                  </p>
-                  <p className="text-sm text-gray-500 mt-1">Today</p>
-                </div>
+            ) : (
+              <div className="bg-red-500/10 border border-red-500/30 p-6 rounded-2xl text-center">
+                <p className="text-red-400 text-xl">Vehicle not found in any parking location.</p>
               </div>
-
-              <div className="bg-slate-900/50 rounded-2xl p-6 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-400 mb-1">Assigned Slot</p>
-                  <p className="text-4xl font-extrabold text-[var(--color-neon-cyan)] neon-text">{result.slot.id}</p>
-                </div>
-                
-                <Link href={`/navigation?dest=${result.slot.id}`}>
-                  <button className="px-6 py-4 bg-[var(--color-neon-blue)] rounded-xl text-white font-bold flex items-center gap-2 hover:bg-blue-600 transition-colors shadow-[0_0_20px_rgba(0,81,255,0.3)]">
-                    Navigate <ArrowRight className="w-5 h-5" />
-                  </button>
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <div className="glass-panel p-12 rounded-3xl text-center border border-red-500/30 bg-red-950/10">
-              <Search className="w-16 h-16 text-red-500/50 mx-auto mb-4" />
-              <h3 className="text-2xl font-bold text-white mb-2">Vehicle Not Found</h3>
-              <p className="text-gray-400">We couldn't locate a vehicle with license plate <span className="text-white font-mono uppercase">{vehicleNo}</span>. Please check the number and try again.</p>
-            </div>
-          )}
-        </motion.div>
-      )}
+            )}
+          </div>
+        )}
+      </div>
     </main>
   );
 }

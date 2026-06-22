@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { ParkingProvider } from "@/lib/context/ParkingContext";
 import AuthProvider from "@/components/AuthProvider";
-import Navbar from "@/components/Navbar";
+import AppShell from "@/components/AppShell";
+import { ParkingProvider } from "@/lib/context/ParkingContext";
+import { NotificationProvider } from "@/lib/context/NotificationContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -20,6 +21,7 @@ export const metadata: Metadata = {
   description: "Next-Gen Smart Parking System",
 };
 
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -33,10 +35,9 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-slate-950 text-white">
         <AuthProvider>
           <ParkingProvider>
-            <Navbar />
-            <div className="pt-16 flex-1">
-              {children}
-            </div>
+            <NotificationProvider>
+              <AppShell>{children}</AppShell>
+            </NotificationProvider>
           </ParkingProvider>
         </AuthProvider>
       </body>

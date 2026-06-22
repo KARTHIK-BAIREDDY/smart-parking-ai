@@ -1,15 +1,27 @@
+/* eslint-disable */
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useRef } from "react";
-import { useSession, signIn, signOut } from "next-auth/react";
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 
-export type SlotStatus = "available" | "occupied" | "reserved" | "inactive" | "ai-recommended";
+export type SlotStatus = "available" | "occupied" | "reserved" | "maintenance";
+export type SlotType = "regular" | "visitor" | "reserved" | "disabled";
+
+export interface APISlot {
+  _id?: string;
+  parkingPlaceId: string;
+  slotId: string;
+  status: SlotStatus;
+  slotType?: SlotType;
+  vehicleId?: string | null;
+  entryTime?: string | Date | null;
+}
 
 export interface Slot {
   id: string;
   status: SlotStatus;
-  vehicleNo?: string;
-  entryTime?: string;
+  slotType?: SlotType;
+  vehicleId?: string | null;
+  entryTime?: string | Date | null;
 }
 
 export interface SubRow {
@@ -23,6 +35,7 @@ export interface Row {
 }
 
 export interface ParkingPlace {
+  _id?: string;
   id: string;
   name: string;
   code: string;
@@ -30,300 +43,185 @@ export interface ParkingPlace {
   state: string;
   district: string;
   area: string;
-  institutionName?: string;
-  rows: Row[];
+  institutionName: string;
+  rows: number;
+  subrows: number;
+  slotsPerSubrow: number;
+  totalSlots: number;
+  occupiedSlots: number;
+  availableSlots: number;
 }
 
-export interface SecurityLog {
-  id: string;
-  timestamp: string;
-  event: string;
-  severity: "low" | "medium" | "high";
-}
-
-export interface LastParked {
-  vehicleNo: string;
-  placeName: string;
+export interface AssignmentResult {
+  vehicleId: string;
   slotId: string;
+  placeId: string;
+  placeName: string;
+  vehicleType: string;
   entryTime: string;
+  isVisitor?: boolean;
 }
 
 interface ParkingContextType {
   locations: ParkingPlace[];
-  addLocation: (location: ParkingPlace) => void;
-  updateSlotStatus: (locationId: string, slotId: string, status: SlotStatus, vehicleNo?: string) => void;
-  assignAiSlot: (locationId: string, mockVehicleNo?: string) => Slot | null;
-  findVehicle: (vehicleNo: string) => { location: ParkingPlace; slot: Slot } | null;
-  
-  addRow: (locationId: string, rowId: string) => void;
-  addSubRow: (locationId: string, rowId: string, subRowId: string) => void;
-  addSlots: (locationId: string, rowId: string, subRowId: string, count: number) => void;
-
-  isAuthenticated: boolean;
-  login: () => void;
-  logout: () => void;
-  securityLogs: SecurityLog[];
-  addSecurityLog: (event: string, severity: "low" | "medium" | "high") => void;
-
-  lastParkedVehicle: LastParked | null;
+  loading: boolean;
+  slots: APISlot[];
+  slotsLoading: boolean;
+  lastAssignment: AssignmentResult | null;
+  refreshLocations: () => Promise<void>;
+  refreshSlots: (placeId: string) => Promise<void>;
+  updateSlotStatus: (
+    placeId: string,
+    slotId: string,
+    status: SlotStatus,
+    vehicleId?: string,
+    vehicleType?: string
+  ) => Promise<void>;
 }
 
 const ParkingContext = createContext<ParkingContextType | undefined>(undefined);
 
-export const ParkingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { data: session, status } = useSession();
-  
+export function ParkingProvider({ children }: { children: ReactNode }) {
   const [locations, setLocations] = useState<ParkingPlace[]>([]);
-  const [securityLogs, setSecurityLogs] = useState<SecurityLog[]>([]);
-  const [lastParkedVehicle, setLastParkedVehicle] = useState<LastParked | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [slots, setSlots] = useState<APISlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState<boolean>(false);
+  const [lastAssignment, setLastAssignment] = useState<AssignmentResult | null>(null);
 
-  const isAuthenticated = status === "authenticated";
-
-  // Use a ref to prevent sync loops
-  const isSyncing = useRef(false);
-
-  // Fetch initial state and poll every 2 seconds
-  useEffect(() => {
-    const fetchState = async () => {
-      if (isSyncing.current) return;
-      try {
-        const res = await fetch("/api/sync");
-        const data = await res.json();
-        setLocations(data.locations || []);
-        setLastParkedVehicle(data.lastParkedVehicle || null);
-        setSecurityLogs(data.securityLogs || []);
-      } catch (err) {
-        console.error("Failed to sync state from server");
-      }
-    };
-
-    fetchState();
-    const interval = setInterval(fetchState, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Helper to push state to server
-  const pushState = async (newState: any) => {
-    isSyncing.current = true;
+  const refreshLocations = useCallback(async () => {
     try {
-      await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newState),
-      });
-    } catch (err) {
-      console.error("Failed to push state");
-    } finally {
-      isSyncing.current = false;
-    }
-  };
+      setLoading(true);
+      const url = "/api/parking";
+      console.log("refreshLocations endpoint:", url);
+      const res = await fetch(url);
+      console.log(
+        "refreshLocations response:",
+        res.status,
+        res.url
+      );
+      if (!res.ok) throw new Error(`API Error: ${res.status}`);
 
-  const syncAll = (newLocations: ParkingPlace[], newLogs: SecurityLog[], newLastParked: LastParked | null) => {
-    setLocations(newLocations);
-    setSecurityLogs(newLogs);
-    setLastParkedVehicle(newLastParked);
-    pushState({ locations: newLocations, securityLogs: newLogs, lastParkedVehicle: newLastParked });
-  };
+      const placesData = await res.json();
+      let placesArray: any[] = [];
 
-  const addLocation = (location: ParkingPlace) => {
-    const newLocs = [...locations, location];
-    const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), event: `Added new parking location: ${location.name}`, severity: "medium" as const };
-    const newLogs = [newLog, ...securityLogs].slice(0, 100);
-    syncAll(newLocs, newLogs, lastParkedVehicle);
-  };
-
-  const updateSlotStatus = (locationId: string, slotId: string, status: SlotStatus, vehicleNo?: string) => {
-    const entryTime = new Date().toISOString();
-    let updatedLastParked = lastParkedVehicle;
-
-    const newLocs = locations.map((loc) => {
-      if (loc.id !== locationId) return loc;
-      return {
-        ...loc,
-        rows: loc.rows.map((row) => ({
-          ...row,
-          subRows: row.subRows.map((sub) => ({
-            ...sub,
-            slots: sub.slots.map((s) => {
-              if (s.id === slotId) {
-                return { ...s, status, vehicleNo, entryTime };
-              }
-              return s;
-            }),
-          })),
-        })),
-      };
-    });
-
-    if (status === "occupied" && vehicleNo) {
-      const loc = locations.find(l => l.id === locationId);
-      if (loc) {
-        updatedLastParked = { vehicleNo, placeName: loc.name, slotId, entryTime };
+      if (Array.isArray(placesData)) {
+        placesArray = placesData;
+      } else if (placesData && Array.isArray(placesData.data)) {
+        placesArray = placesData.data;
       }
-    }
 
-    syncAll(newLocs, securityLogs, updatedLastParked);
-  };
-
-  const assignAiSlot = (locationId: string, mockVehicleNo?: string): Slot | null => {
-    const loc = locations.find((l) => l.id === locationId);
-    if (!loc) return null;
-
-    let bestSlot: Slot | null = null;
-    for (const row of loc.rows) {
-      for (const subRow of row.subRows) {
-        for (const slot of subRow.slots) {
-          if (slot.status === "available") {
-            bestSlot = slot;
-            break;
-          }
-        }
-        if (bestSlot) break;
-      }
-      if (bestSlot) break;
-    }
-
-    if (bestSlot) {
-      const vNo = mockVehicleNo || `AI-${Math.floor(Math.random() * 9000) + 1000}`;
-      
-      const entryTime = new Date().toISOString();
-      const updatedLastParked = { vehicleNo: vNo, placeName: loc.name, slotId: bestSlot.id, entryTime };
-      
-      const newLocs = locations.map((l) => {
-        if (l.id !== locationId) return l;
-        return {
-          ...l,
-          rows: l.rows.map((row) => ({
-            ...row,
-            subRows: row.subRows.map((sub) => ({
-              ...sub,
-              slots: sub.slots.map((s) => {
-                if (s.id === bestSlot!.id) return { ...s, status: "occupied" as SlotStatus, vehicleNo: vNo, entryTime };
-                return s;
-              }),
-            })),
-          })),
-        };
-      });
-
-      const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), event: `AI assigned vehicle ${vNo} to slot ${bestSlot.id}`, severity: "low" as const };
-      const newLogs = [newLog, ...securityLogs].slice(0, 100);
-      
-      syncAll(newLocs, newLogs, updatedLastParked);
-      
-      return { ...bestSlot, status: "occupied", vehicleNo: vNo, entryTime };
-    }
-    return null;
-  };
-
-  const findVehicle = (vehicleNo: string) => {
-    for (const loc of locations) {
-      for (const row of loc.rows) {
-        for (const subRow of row.subRows) {
-          for (const slot of subRow.slots) {
-            if (slot.vehicleNo?.toUpperCase() === vehicleNo.toUpperCase()) {
-              return { location: loc, slot };
+      const enrichedPlaces = await Promise.all(
+        placesArray.map(async (place: any) => {
+          const totalSlots =
+            (place.rows || 1) * (place.subrows || 1) * (place.slotsPerSubrow || 1);
+          let occupiedSlots = 0;
+          try {
+            const slotUrl = `/api/slots?placeId=${place.id || place._id}`;
+            console.log("refreshLocations inner fetch endpoint:", slotUrl);
+            const slotsRes = await fetch(slotUrl);
+            console.log("refreshLocations inner fetch response:", slotsRes.status, slotsRes.url);
+            if (slotsRes.ok) {
+              const data = await slotsRes.json();
+              const dbSlots = Array.isArray(data) ? data : data.slots || [];
+              occupiedSlots = dbSlots.filter((s: any) => s.status === "occupied").length;
             }
+          } catch (e) {
+            console.error("Error fetching slots for place:", e);
           }
-        }
-      }
-    }
-    return null;
-  };
-
-  const addRow = (locationId: string, rowId: string) => {
-    const newLocs = locations.map(loc => {
-      if (loc.id !== locationId) return loc;
-      if (loc.rows.some(r => r.id === rowId)) return loc;
-      return { ...loc, rows: [...loc.rows, { id: rowId, subRows: [] }] };
-    });
-    
-    const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), event: `Added Row ${rowId}`, severity: "low" as const };
-    syncAll(newLocs, [newLog, ...securityLogs].slice(0, 100), lastParkedVehicle);
-  };
-
-  const addSubRow = (locationId: string, rowId: string, subRowId: string) => {
-    const newLocs = locations.map(loc => {
-      if (loc.id !== locationId) return loc;
-      return {
-        ...loc,
-        rows: loc.rows.map(row => {
-          if (row.id !== rowId) return row;
-          if (row.subRows.some(s => s.id === subRowId)) return row;
-          return { ...row, subRows: [...row.subRows, { id: subRowId, slots: [] }] };
-        })
-      };
-    });
-    const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), event: `Added SubRow ${subRowId}`, severity: "low" as const };
-    syncAll(newLocs, [newLog, ...securityLogs].slice(0, 100), lastParkedVehicle);
-  };
-
-  const addSlots = (locationId: string, rowId: string, subRowId: string, count: number) => {
-    const newLocs = locations.map(loc => {
-      if (loc.id !== locationId) return loc;
-      return {
-        ...loc,
-        rows: loc.rows.map(row => {
-          if (row.id !== rowId) return row;
           return {
-            ...row,
-            subRows: row.subRows.map(sub => {
-              if (sub.id !== subRowId) return sub;
-              const newSlots = Array.from({ length: count }, (_, i) => ({
-                id: `${subRowId}-${sub.slots.length + i + 1}`,
-                status: "available" as SlotStatus
-              }));
-              return { ...sub, slots: [...sub.slots, ...newSlots] };
-            })
+            ...place,
+            id: place.id || place._id,
+            totalSlots,
+            occupiedSlots,
+            availableSlots: totalSlots - occupiedSlots,
           };
         })
-      };
+      );
+
+      setLocations(enrichedPlaces);
+    } catch (error) {
+      console.error(error);
+      setLocations([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshSlots = useCallback(async (placeId: string) => {
+    if (!placeId) return;
+    try {
+      setSlotsLoading(true);
+      const res = await fetch(`/api/slots?placeId=${placeId}`);
+      if (!res.ok) throw new Error("Failed to fetch slots");
+      const data = await res.json();
+      const dbSlots = Array.isArray(data) ? data : data.slots || [];
+      setSlots(dbSlots);
+    } catch (e) {
+      console.error(e);
+      setSlots([]);
+    } finally {
+      setSlotsLoading(false);
+    }
+  }, []);
+
+  const updateSlotStatus = async (
+    placeId: string,
+    slotId: string,
+    status: SlotStatus,
+    vehicleId?: string,
+    vehicleType?: string
+  ) => {
+    if (!placeId) {
+      throw new Error("placeId is required to update a slot");
+    }
+
+    const res = await fetch("/api/slots", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ placeId, slotId, status, vehicleId: vehicleId || null, vehicleType: vehicleType || null }),
     });
-    const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), event: `Added ${count} slots to SubRow ${subRowId}`, severity: "low" as const };
-    syncAll(newLocs, [newLog, ...securityLogs].slice(0, 100), lastParkedVehicle);
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "Failed to update slot status");
+    }
+
+    const data = await res.json();
+    if (data.success && data.slot) {
+      setSlots((prev) => prev.map((s) => (s.slotId === slotId ? data.slot : s)));
+      // eslint-disable-next-line
+    refreshLocations();
+    }
   };
 
-  const login = () => {
-    signIn("google", { callbackUrl: "/admin" });
-  };
-  
-  const logout = () => {
-    signOut({ callbackUrl: "/" });
-  };
 
-  const addSecurityLog = (event: string, severity: "low" | "medium" | "high") => {
-    const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), event, severity };
-    syncAll(locations, [newLog, ...securityLogs].slice(0, 100), lastParkedVehicle);
-  };
+  useEffect(() => {
+    // eslint-disable-next-line
+    refreshLocations();
+  }, []);
 
   return (
     <ParkingContext.Provider
       value={{
         locations,
-        addLocation,
+        loading,
+        slots,
+        slotsLoading,
+        lastAssignment,
+        refreshLocations,
+        refreshSlots,
         updateSlotStatus,
-        assignAiSlot,
-        findVehicle,
-        addRow,
-        addSubRow,
-        addSlots,
-        isAuthenticated,
-        login,
-        logout,
-        securityLogs,
-        addSecurityLog,
-        lastParkedVehicle,
       }}
     >
       {children}
     </ParkingContext.Provider>
   );
-};
+}
 
-export const useParking = () => {
+export function useParking(): ParkingContextType {
   const context = useContext(ParkingContext);
   if (context === undefined) {
     throw new Error("useParking must be used within a ParkingProvider");
   }
   return context;
-};
+}

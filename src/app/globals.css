@@ -1,47 +1,50 @@
 @import "tailwindcss";
 
 @theme {
-  --color-neon-cyan: #00f3ff;
-  --color-neon-blue: #0051ff;
-  --color-dark-bg: #050505;
-  --color-card-bg: rgba(20, 20, 25, 0.7);
-  --color-glass-border: rgba(0, 243, 255, 0.2);
-  --color-slot-green: #00ff66;
-  --color-slot-red: #ff0055;
-  --color-slot-yellow: #ffaa00;
-  --color-slot-blue: #00f3ff;
+  --color-background: #0D0D0D;
+  --color-sidebar: #171717;
+  --color-card: #1E1E1E;
+  --color-border: #2A2A2A;
+  --color-primary: #ECECEC;
+  --color-secondary: #A3A3A3;
+  --color-accent: #10A37F;
+
+  --color-slot-available: #22C55E;
+  --color-slot-occupied: #EF4444;
+  --color-slot-reserved: #3B82F6;
+  --color-slot-maintenance: #F59E0B;
+  --color-slot-ev: #8B5CF6;
+  --color-slot-accessible: #06B6D4;
 }
 
 :root {
-  --background: var(--color-dark-bg);
-  --foreground: #e2e8f0;
+  --background: #0D0D0D;
+  --foreground: #ECECEC;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
   min-height: 100vh;
   overflow-x: hidden;
+  /* Smooth scrolling and antialiasing */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.glass-panel {
-  background: var(--color-card-bg);
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--color-glass-border);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+/* Custom scrollbar for a premium look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
-
-.neon-text {
-  text-shadow: 0 0 10px rgba(0, 243, 255, 0.5), 0 0 20px rgba(0, 243, 255, 0.3);
+::-webkit-scrollbar-track {
+  background: transparent;
 }
-
-/* 3D Dashboard Specific Styles */
-.perspective-container {
-  perspective: 1000px;
+::-webkit-scrollbar-thumb {
+  background: #2A2A2A;
+  border-radius: 4px;
 }
-
-.iso-grid {
-  transform: rotateX(60deg) rotateZ(-45deg);
-  transform-style: preserve-3d;
+::-webkit-scrollbar-thumb:hover {
+  background: #A3A3A3;
 }
