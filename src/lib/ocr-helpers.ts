@@ -1,6 +1,7 @@
 export const EXPERIMENTAL_FEATURES = false;
 
 console.log("ANPR_BUNDLE_LOADED_V2");
+console.log("OCR_HELPERS_BUILD_20250622_001");
 const YOLO_CONFIDENCE_THRESHOLD = 0.15;
 const YOLO_INPUT_SIZE = 640;
 
@@ -436,156 +437,59 @@ export function preprocessImage(
         let yoloLatency = 0;
         let yoloConfidence = 0.0;
         let yoloUsed = false;
-        
-         try {
-           const startTime = Date.now();
-           const controller = new AbortController();
-           const timeoutId = setTimeout(() => controller.abort(), 2500); // 2500ms timeout
-           
-           const originalWidth = vehicleCrop.width!;
-           const originalHeight = vehicleCrop.height!;
-           console.log("YOLO_REQUEST_START");
-           console.log("YOLO request started");
-           const res = await fetch("http://127.0.0.1:8000/detect-plate", {
-             method: "POST",
-             headers: { "Content-Type": "application/json" },
-             body: JSON.stringify({ vehicleCrop: rawPlateDataUrl }),
-             signal: controller.signal
-           });
-           
-           clearTimeout(timeoutId);
 
-           // Save vehicle_crop.png (rawPlateDataUrl)
-           const aVehicle = document.createElement("a");
-           aVehicle.href = rawPlateDataUrl;
-           aVehicle.download = "vehicle_crop.png";
-           document.body.appendChild(aVehicle);
-           aVehicle.click();
-           document.body.removeChild(aVehicle);
-           
-           if (res.ok) {
-             console.log("YOLO response received");
-             const data = await res.json();
-             console.log("YOLO_RESPONSE", data);
-             yoloLatency = Date.now() - startTime;
-             yoloConfidence = data.confidence;
-             console.log(`YOLO confidence: ${yoloConfidence}`);
-             console.log(`YOLO bbox: x=${data.x}, y=${data.y}, w=${data.width}, h=${data.height}`);
-             
-             console.log("YOLO confidence:", yoloConfidence, "threshold:", YOLO_CONFIDENCE_THRESHOLD, "using fallback:", yoloConfidence < YOLO_CONFIDENCE_THRESHOLD);
-             if (yoloConfidence >= YOLO_CONFIDENCE_THRESHOLD && data.width > 0 && data.height > 0) {
-               const yoloAspectRatio = data.width / data.height;
-               console.log("YOLO_RESPONSE", data);
-               console.log("YOLO_CONFIDENCE", data.confidence);
-               console.log("YOLO_BOX", {
-                 x: data.x,
-                 y: data.y,
-                 w: data.width,
-                 h: data.height,
-               });
-               console.log(`YOLO_ASPECT_RATIO: ${yoloAspectRatio.toFixed(2)}`);
-
-               if (yoloAspectRatio < 0.8 || yoloAspectRatio > 6.5) {
-                 console.log("PLATE_AR", yoloAspectRatio);
-                 console.log("YOLO_BOX_REJECTED_AR: Aspect ratio out of bounds.");
-               } else {
-                 console.log("PLATE_AR", yoloAspectRatio);
-                 console.log("YOLO_BOX_ACCEPTED");
-                 
-                 const scaleX = originalWidth / YOLO_INPUT_SIZE;
-                 const scaleY = originalHeight / YOLO_INPUT_SIZE;
-                 const correctedX = data.x * scaleX;
-                 const correctedY = data.y * scaleY;
-                 const correctedW = data.width * scaleX;
-                 const correctedH = data.height * scaleY;
-                 
-                 data.x = correctedX;
-                 data.y = correctedY;
-                 data.width = correctedW;
-                 data.height = correctedH;
-                 
-                 console.log("Crop sent to OCR dimensions:", correctedW, correctedH);
-
-                 yoloResult = data;
-                 yoloUsed = true;
-                 console.log("A: YOLO_SUCCESS");
-                 
-                 if (yoloConfidence < 0.70) {
-                   console.warn(`MEDIUM CONFIDENCE (${yoloConfidence}): YOLO may be uncertain.`);
-                 }
-               }
-             } else {
-               console.log("B: YOLO_LOW_CONFIDENCE");
-               console.log(`Fallback activated reason: Low confidence (${yoloConfidence}) or invalid size`);
-             }
-           } else {
-             console.log("E: YOLO_EXCEPTION");
-             console.log(`Fallback activated reason: API returned status ${res.status}`);
-           }
-        } catch (err: any) {
-           if (err.name === 'AbortError') {
-             console.log("C: YOLO_TIMEOUT");
-             console.log("Fallback activated reason: Request timed out after 2500ms");
-           } else {
-             console.log("D: YOLO_CONNECTION_FAILED");
-             console.log("YOLO_CONNECTION_FAILED", err);
-             console.log(`Fallback activated reason: ${err.message}`);
-           }
-        }
-
-        // Apply fallback if YOLO wasn't used
+        // YOLO DISABLED: Falling back to contour localization (Active during successful tests)
         const roiImgData = ctx.getImageData(0, 0, pw, ph);
         const { bestCandidate: refinedRect, candidates: allLocCandidates } = localizePlateInROI(roiImgData);
 
+        console.log("USING_FALLBACK_ROI");
+        console.log("FALLBACK_ACTIVATED");
+        finalRoiSource = "CONTOUR_LOCALIZATION";
+
+        console.log(`LOCALIZATION_CANDIDATE_COUNT: ${allLocCandidates.length}`);
         if (refinedRect) {
-          // Contour used, do not save debug_contour_crop.png as requested
-        }
-        
-        // Save yolo_crop.png as requested
-        if (yoloResult && yoloResult.width > 0 && yoloResult.height > 0) {
-          const yCanvas = document.createElement("canvas");
-          yCanvas.width = yoloResult.width;
-          yCanvas.height = yoloResult.height;
-          const yCtx = yCanvas.getContext("2d");
-          if (yCtx) {
-            yCtx.drawImage(img, px + yoloResult.x, py + yoloResult.y, yoloResult.width, yoloResult.height, 0, 0, yoloResult.width, yoloResult.height);
-            const a = document.createElement("a");
-            a.href = yCanvas.toDataURL("image/png");
-            a.download = "yolo_crop.png";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          }
+          console.log(`LOCALIZATION_WINNER_X: ${refinedRect.x}`);
+          console.log(`LOCALIZATION_WINNER_Y: ${refinedRect.y}`);
+          console.log(`LOCALIZATION_WINNER_W: ${refinedRect.w}`);
+          console.log(`LOCALIZATION_WINNER_H: ${refinedRect.h}`);
+          console.log(`LOCALIZATION_WINNER_SCORE: ${refinedRect.score}`);
+        } else {
+          console.log("LOCALIZATION_WINNER_X: NONE");
+          console.log("LOCALIZATION_WINNER_Y: NONE");
+          console.log("LOCALIZATION_WINNER_W: NONE");
+          console.log("LOCALIZATION_WINNER_H: NONE");
+          console.log("LOCALIZATION_WINNER_SCORE: NONE");
         }
 
-        if (!yoloResult || yoloResult.confidence < YOLO_CONFIDENCE_THRESHOLD) {
-          console.warn("FALLBACK ACTIVATED — reason:", !yoloResult ? "no detection" : "low confidence");
-          if (yoloResult) {
-            console.warn("YOLO confidence was:", yoloResult.confidence);
-          }
-          console.log("USING_FALLBACK_ROI");
-          console.log("FALLBACK_ACTIVATED");
-          console.log("YOLO_FALLBACK_USED");
-          finalRoiSource = "FALLBACK";
+        for (const c of allLocCandidates) {
+          candidateROIs.push([px + c.x, py + c.y, c.w, c.h, c.score]);
+        }
 
-          for (const c of allLocCandidates) {
-            candidateROIs.push([px + c.x, py + c.y, c.w, c.h, c.score]);
-          }
+        if (refinedRect) {
+          rX = px + refinedRect.x;
+          rY = py + refinedRect.y;
+          rW = refinedRect.w;
+          rH = refinedRect.h;
+        }
 
+        // Draw the winning contour box on vehicle_crop.png and save it
+        const debugVehicleCanvas = document.createElement("canvas");
+        debugVehicleCanvas.width = pw;
+        debugVehicleCanvas.height = ph;
+        const debugVehicleCtx = debugVehicleCanvas.getContext("2d");
+        if (debugVehicleCtx) {
+          debugVehicleCtx.drawImage(img, px, py, pw, ph, 0, 0, pw, ph);
           if (refinedRect) {
-            rX = px + refinedRect.x;
-            rY = py + refinedRect.y;
-            rW = refinedRect.w;
-            rH = refinedRect.h;
+            debugVehicleCtx.strokeStyle = "red";
+            debugVehicleCtx.lineWidth = 2;
+            debugVehicleCtx.strokeRect(refinedRect.x, refinedRect.y, refinedRect.w, refinedRect.h);
           }
-        } else if (yoloResult) {
-          console.log("USING_YOLO_ROI");
-          console.log("YOLO_SUCCESS_USED");
-          finalRoiSource = "YOLO";
-          rX = px + yoloResult.x;
-          rY = py + yoloResult.y;
-          rW = yoloResult.width;
-          rH = yoloResult.height;
+          const a = document.createElement("a");
+          a.href = debugVehicleCanvas.toDataURL("image/png");
+          a.download = "vehicle_crop.png";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
         }
 
         console.log("ROI_SELECTED");
@@ -601,6 +505,13 @@ export function preprocessImage(
           if (locCtx) {
             locCtx.drawImage(img, rX, rY, rW, rH, 0, 0, rW, rH);
             passes.push({ src: locCanvas.toDataURL("image/jpeg"), name: "Localized Plate", roi: [rX, rY, rW, rH] });
+
+            const aLoc = document.createElement("a");
+            aLoc.href = locCanvas.toDataURL("image/png");
+            aLoc.download = "localized_plate.png";
+            document.body.appendChild(aLoc);
+            aLoc.click();
+            document.body.removeChild(aLoc);
           }
 
 
@@ -657,6 +568,16 @@ export function preprocessImage(
         }
 
         console.log("PREPROCESS_EXITED");
+
+        if (passes.length > 0) {
+          const aFinal = document.createElement("a");
+          aFinal.href = passes[passes.length - 1].src;
+          aFinal.download = "final_ocr_input.png";
+          document.body.appendChild(aFinal);
+          aFinal.click();
+          document.body.removeChild(aFinal);
+        }
+
         resolve({ 
           passes, 
           originalCrop: vehicleCrop, 
@@ -789,16 +710,7 @@ export async function runMultiPassOCR(
     console.log(`final_roi_width: ${Math.round(telemetry.refinedPlateROI[2])}`);
     console.log(`final_roi_height: ${Math.round(telemetry.refinedPlateROI[3])}`);
 
-    // STEP 2: Save actual OCR input image
-    if (passes.length > 0) {
-      const finalOcrCrop = passes[passes.length - 1].src;
-      const a = document.createElement("a");
-      a.href = finalOcrCrop;
-      a.download = "final_ocr_input.png";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+    // STEP 2: Save actual OCR input image (MOVED TO preprocessImage)
 
     const ocrResult = await executeOCR(passes, debugLog);
     bestResult = ocrResult?.bestResult || null;
