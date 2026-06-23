@@ -3,11 +3,6 @@
     "frontend": {
       "routePrefix": "/",
       "framework": "nextjs"
-    },
-    "ml-anpr": {
-      "root": "services/ml-anpr",
-      "entrypoint": "main:app",
-      "routePrefix": "/_/ml-anpr"
     }
   }
 }
