@@ -2,7 +2,7 @@ const { MongoClient, ObjectId } = require('mongodb');
 
 async function run() {
   try {
-    const client = new MongoClient('mongodb://parkingadmin:KGBmen001@ac-svjokx4-shard-00-00.zjc3tmo.mongodb.net:27017,ac-svjokx4-shard-00-01.zjc3tmo.mongodb.net:27017,ac-svjokx4-shard-00-02.zjc3tmo.mongodb.net:27017/smartparking?ssl=true&replicaSet=atlas-zbedl5-shard-0&authSource=admin');
+    const client = new MongoClient(process.env.MONGODB_URI);
     await client.connect();
     const db = client.db('smartparking');
 
