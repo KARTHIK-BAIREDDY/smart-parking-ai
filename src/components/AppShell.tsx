@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 import { usePathname, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Navbar from "@/components/Navbar";
@@ -11,7 +13,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
   
   // Define public routes that still use the Navbar
-  const isPublicRoute = pathname === "/login" || pathname === "/signup" || pathname?.startsWith("/login/");
+  const isPublicRoute = pathname === "/" || pathname === "/login" || pathname === "/signup" || pathname?.startsWith("/login/");
+
+  useEffect(() => {
+    if (!isPublicRoute && status === "unauthenticated") {
+      router.replace("/");
+    }
+  }, [isPublicRoute, status, router]);
 
   // Loading gate for protected routes
   if (!isPublicRoute && status === "loading") {
@@ -24,15 +32,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   // Double check auth state client-side
   if (!isPublicRoute && status === "unauthenticated") {
-    if (typeof window !== "undefined") {
-      router.replace("/login");
-    }
     return null;
   }
 
-  if (isPublicRoute || pathname === "/") {
-    // If we are at the root, we can still render the Navbar, but it is protected.
-    // Or we just treat / as a public layout route (Navbar) even though it requires auth.
+  if (isPublicRoute) {
+    // Render public layout with Navbar
     return (
       <>
         <Navbar />

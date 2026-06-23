@@ -4,14 +4,12 @@ import { isAdminRole } from "@/lib/auth-helpers";
 import { getSessionUser } from "@/lib/auth-helpers";
 
 import { MetricsOverview } from "@/components/admin/MetricsOverview";
+import { TelemetryPanel } from "@/components/admin/TelemetryPanel";
 import { AnalyticsSection } from "@/components/admin/AnalyticsSection";
 import { ActiveSessionsTable } from "@/components/admin/ActiveSessionsTable";
 
 import { ManualOperationsPanel } from "@/components/admin/ManualOperationsPanel";
-import { SystemHealthPanel } from "@/components/admin/SystemHealthPanel";
 import { AuditEventFeed } from "@/components/admin/AuditEventFeed";
-import { SmsSettingsPanel } from "@/components/admin/SmsSettingsPanel";
-
 export default async function AdminDashboardPage() {
   const session = await getAuthSession();
   const user = getSessionUser(session);
@@ -21,8 +19,8 @@ export default async function AdminDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white p-6 md:p-10 font-sans pb-24">
-      <div className="max-w-7xl mx-auto space-y-8">
+    <div className="min-h-screen bg-black px-4 sm:px-6 lg:px-8 py-8">
+      <div className="w-full max-w-[1600px] mx-auto space-y-8">
         
         <header className="flex justify-between items-end">
           <div>
@@ -37,20 +35,16 @@ export default async function AdminDashboardPage() {
         </header>
 
         <MetricsOverview />
+        <TelemetryPanel />
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-8">
-            <AnalyticsSection />
-
-            <ActiveSessionsTable />
-          </div>
-          <div className="space-y-8">
-            <SystemHealthPanel />
-            <SmsSettingsPanel />
-            <ManualOperationsPanel />
-            <AuditEventFeed />
-          </div>
+        <div className="space-y-8">
+          <AnalyticsSection />
+          <ActiveSessionsTable />
         </div>
+
+        <ManualOperationsPanel />
+
+        <AuditEventFeed />
 
       </div>
     </div>

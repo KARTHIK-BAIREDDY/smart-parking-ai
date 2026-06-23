@@ -1,45 +1,117 @@
-/* eslint-disable */
 "use client";
 
-import { useState } from "react";
-import { AlertOctagon, RefreshCw, XCircle } from "lucide-react";
+import { useState, useEffect } from "react";
+import { AlertOctagon, Car, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function ManualOperationsPanel() {
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{success: boolean, msg: string} | null>(null);
+  const [parkingPlaces, setParkingPlaces] = useState<any[]>([]);
+  const [loadingPlaces, setLoadingPlaces] = useState(true);
 
-  const [closeSessionId, setCloseSessionId] = useState("");
-  const [closeReason, setCloseReason] = useState("");
+  useEffect(() => {
+    fetch("/api/parking")
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setParkingPlaces(data);
+          if (data.length > 0) {
+            setAssignPlaceId(data[0].id);
+          }
+        }
+        setLoadingPlaces(false);
+      })
+      .catch(err => {
+        console.error("Failed to load parking places", err);
+        setLoadingPlaces(false);
+      });
+  }, []);
+  const [loadingAssign, setLoadingAssign] = useState(false);
+  const [resultAssign, setResultAssign] = useState<{success: boolean, msg: string} | null>(null);
 
-  const [releaseSlotId, setReleaseSlotId] = useState("");
-  const [releaseReason, setReleaseReason] = useState("");
+  const [loadingRemove, setLoadingRemove] = useState(false);
+  const [resultRemove, setResultRemove] = useState<{success: boolean, msg: string} | null>(null);
 
-  const [reassignSession, setReassignSession] = useState("");
-  const [reassignOldSlot, setReassignOldSlot] = useState("");
-  const [reassignNewSlot, setReassignNewSlot] = useState("");
-  const [reassignReason, setReassignReason] = useState("");
+  // Assignment fields
+  const [assignVehicleNo, setAssignVehicleNo] = useState("");
+  const [assignType, setAssignType] = useState("CAR");
+  const [assignReason, setAssignReason] = useState("");
+  const [assignPlaceId, setAssignPlaceId] = useState("");
 
-  const handleOp = async (path: string, body: any) => {
-    setLoading(true);
-    setResult(null);
+  // Removal fields
+  const [removeVehicleNo, setRemoveVehicleNo] = useState("");
+  const [removeSlotId, setRemoveSlotId] = useState("");
+  const [removeReason, setRemoveReason] = useState("");
+
+  const handleAssignment = async () => {
+    setLoadingAssign(true);
+    setResultAssign(null);
     try {
-      const res = await fetch(path, {
+      const res = await fetch("/api/slots/assign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          vehicleId: assignVehicleNo,
+          vehicleType: assignType,
+          placeId: assignPlaceId || "P-1", // Use selected or default
+          confidence: 100,
+          cameraId: "manual_assignment"
+        })
       });
       const data = await res.json();
-      setResult({ success: data.success, msg: data.message || data.error });
-      if (data.success) {
-        setCloseSessionId(""); setCloseReason("");
-        setReleaseSlotId(""); setReleaseReason("");
-        setReassignSession(""); setReassignOldSlot(""); setReassignNewSlot(""); setReassignReason("");
-      }
+      if (!data.success) throw new Error(data.error || "Failed to assign slot");
+      
+      setResultAssign({ success: true, msg: `Assigned Slot: ${data.slotId} for ${data.vehicleNumber}` });
+      setAssignVehicleNo("");
+      setAssignReason("");
     } catch (e: any) {
-      setResult({ success: false, msg: e.message });
+      setResultAssign({ success: false, msg: e.message });
     } finally {
-      setLoading(false);
+      setLoadingAssign(false);
+    }
+  };
+
+  const handleRemoval = async () => {
+    setLoadingRemove(true);
+    setResultRemove(null);
+    try {
+      const sessionsRes = await fetch("/api/admin/sessions");
+      const sessionsData = await sessionsRes.json();
+      
+      if (!sessionsData.success) {
+        throw new Error(sessionsData.error || "Failed to fetch sessions");
+      }
+
+      const sessions = sessionsData.sessions || [];
+      const session = sessions.find((s: any) => {
+        const matchVehicle = removeVehicleNo && s.vehicleNumber?.toUpperCase() === removeVehicleNo.toUpperCase();
+        const matchSlot = removeSlotId && s.slotId === removeSlotId;
+        if (removeVehicleNo && removeSlotId) {
+          return matchVehicle && matchSlot;
+        }
+        return matchVehicle || matchSlot;
+      });
+
+      if (!session) {
+        throw new Error("No active session found matching the provided details");
+      }
+
+      const res = await fetch(`/api/admin/sessions/${session.id}/force-close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: removeReason || "Manual removal by Admin" })
+      });
+      
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || data.error || "Failed to close session");
+
+      setResultRemove({ success: true, msg: "Session closed and slot released." });
+      setRemoveVehicleNo("");
+      setRemoveSlotId("");
+      setRemoveReason("");
+    } catch (e: any) {
+      setResultRemove({ success: false, msg: e.message });
+    } finally {
+      setLoadingRemove(false);
     }
   };
 
@@ -50,99 +122,130 @@ export function ManualOperationsPanel() {
         Manual Operations
       </h3>
 
-      {result && (
-        <div className={`p-3 mb-4 rounded ${result.success ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
-          {result.msg}
-        </div>
-      )}
-
-      <div className="space-y-6">
-        {/* Force Close */}
-        <div className="border border-slate-800 rounded-xl p-4">
-          <h4 className="text-sm font-bold text-gray-300 flex items-center gap-2 mb-3">
-            <XCircle className="w-4 h-4 text-red-400"/> Force Close Session
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        
+        {/* Manual Vehicle Assignment */}
+        <div className="border border-slate-800 bg-slate-950/50 rounded-2xl p-5 flex flex-col h-full">
+          <h4 className="text-sm font-bold text-gray-300 flex items-center gap-2 mb-4">
+            <Car className="w-4 h-4 text-cyan-400"/> Manual Vehicle Assignment
           </h4>
-          <div className="flex gap-2 mb-2">
-            <input 
-              type="text" placeholder="Session ID" 
-              value={closeSessionId} onChange={e => setCloseSessionId(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-1 focus:border-cyan-500 outline-none"
-            />
-            <input 
-              type="text" placeholder="Reason (Required)" 
-              value={closeReason} onChange={e => setCloseReason(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-2 focus:border-cyan-500 outline-none"
-            />
-          </div>
-          <Button 
-            size="sm" variant="destructive" className="w-full" disabled={loading || !closeSessionId || !closeReason}
-            onClick={() => handleOp(`/api/admin/sessions/${closeSessionId}/force-close`, { reason: closeReason })}
-          >
-            Force Close Session
-          </Button>
-        </div>
-
-        {/* Release Slot */}
-        <div className="border border-slate-800 rounded-xl p-4">
-          <h4 className="text-sm font-bold text-gray-300 mb-3">Release Zombie Slot</h4>
-          <div className="flex gap-2 mb-2">
-            <input 
-              type="text" placeholder="Slot ID (e.g. A1-1)" 
-              value={releaseSlotId} onChange={e => setReleaseSlotId(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-1 focus:border-cyan-500 outline-none"
-            />
-            <input 
-              type="text" placeholder="Reason (Required)" 
-              value={releaseReason} onChange={e => setReleaseReason(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-2 focus:border-cyan-500 outline-none"
-            />
-          </div>
-          <Button 
-            size="sm" variant="secondary" className="w-full bg-slate-800 hover:bg-slate-700 text-white" 
-            disabled={loading || !releaseSlotId || !releaseReason}
-            onClick={() => handleOp(`/api/admin/slots/${releaseSlotId}/release`, { reason: releaseReason })}
-          >
-            Release Slot
-          </Button>
-        </div>
-
-        {/* Reassign Slot */}
-        <div className="border border-slate-800 rounded-xl p-4">
-          <h4 className="text-sm font-bold text-gray-300 flex items-center gap-2 mb-3">
-            <RefreshCw className="w-4 h-4 text-blue-400"/> Reassign Vehicle
-          </h4>
-          <div className="flex flex-col gap-2 mb-2">
-            <div className="flex gap-2">
+          
+          {resultAssign && (
+            <div className={`p-3 mb-4 rounded ${resultAssign.success ? 'bg-green-900/30 border border-green-800 text-green-400' : 'bg-red-900/30 border border-red-800 text-red-400'} text-sm`}>
+              {resultAssign.msg}
+            </div>
+          )}
+          
+          <div className="flex-1 space-y-3">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Vehicle Number</label>
               <input 
-                type="text" placeholder="Session ID" 
-                value={reassignSession} onChange={e => setReassignSession(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-1 focus:border-cyan-500 outline-none"
-              />
-              <input 
-                type="text" placeholder="Old Slot ID" 
-                value={reassignOldSlot} onChange={e => setReassignOldSlot(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-1 focus:border-cyan-500 outline-none"
-              />
-              <input 
-                type="text" placeholder="New Slot ID" 
-                value={reassignNewSlot} onChange={e => setReassignNewSlot(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white flex-1 focus:border-cyan-500 outline-none"
+                type="text" placeholder="e.g. MH12TR6518" 
+                value={assignVehicleNo} onChange={e => setAssignVehicleNo(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-cyan-500 outline-none"
               />
             </div>
-            <input 
-              type="text" placeholder="Reason (Required)" 
-              value={reassignReason} onChange={e => setReassignReason(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-sm text-white w-full focus:border-cyan-500 outline-none"
-            />
+            
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Vehicle Type</label>
+              <select 
+                value={assignType} onChange={e => setAssignType(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-cyan-500 outline-none"
+              >
+                <option value="CAR">CAR</option>
+                <option value="MOTORCYCLE">MOTORCYCLE</option>
+                <option value="TRUCK">TRUCK</option>
+              </select>
+            </div>
+            
+            {parkingPlaces.length > 1 && (
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Parking Place</label>
+                <select 
+                  value={assignPlaceId} onChange={e => setAssignPlaceId(e.target.value)}
+                  className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-cyan-500 outline-none"
+                >
+                  {parkingPlaces.map(place => (
+                    <option key={place.id} value={place.id}>{place.name || place.id}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Reason (Audit)</label>
+              <input 
+                type="text" placeholder="e.g. OCR Failed" 
+                value={assignReason} onChange={e => setAssignReason(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-cyan-500 outline-none"
+              />
+            </div>
           </div>
-          <Button 
-            size="sm" className="w-full bg-blue-600 hover:bg-blue-500 text-white" 
-            disabled={loading || !reassignSession || !reassignOldSlot || !reassignNewSlot || !reassignReason}
-            onClick={() => handleOp(`/api/admin/slots/${reassignOldSlot}/reassign`, { sessionId: reassignSession, newSlotId: reassignNewSlot, reason: reassignReason })}
-          >
-            Reassign Vehicle
-          </Button>
+          
+          <div className="mt-5 pt-4 border-t border-slate-800/50">
+            <Button 
+              size="sm" className="w-full bg-cyan-600 hover:bg-cyan-500 text-white" 
+              disabled={loadingAssign || !assignVehicleNo}
+              onClick={handleAssignment}
+            >
+              {loadingAssign ? "Processing..." : "Assign Vehicle"}
+            </Button>
+          </div>
         </div>
+
+        {/* Manual Vehicle Removal */}
+        <div className="border border-slate-800 bg-slate-950/50 rounded-2xl p-5 flex flex-col h-full">
+          <h4 className="text-sm font-bold text-gray-300 flex items-center gap-2 mb-4">
+            <LogOut className="w-4 h-4 text-red-400"/> Manual Vehicle Removal
+          </h4>
+          
+          {resultRemove && (
+            <div className={`p-3 mb-4 rounded ${resultRemove.success ? 'bg-green-900/30 border border-green-800 text-green-400' : 'bg-red-900/30 border border-red-800 text-red-400'} text-sm`}>
+              {resultRemove.msg}
+            </div>
+          )}
+
+          <div className="flex-1 space-y-3">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Vehicle Number</label>
+              <input 
+                type="text" placeholder="e.g. MH12TR6518" 
+                value={removeVehicleNo} onChange={e => setRemoveVehicleNo(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-red-500 outline-none"
+              />
+            </div>
+            
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Slot ID</label>
+              <input 
+                type="text" placeholder="e.g. A1-5" 
+                value={removeSlotId} onChange={e => setRemoveSlotId(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-red-500 outline-none"
+              />
+            </div>
+            
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Reason (Audit)</label>
+              <input 
+                type="text" placeholder="e.g. Vehicle left without checkout" 
+                value={removeReason} onChange={e => setRemoveReason(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white w-full focus:border-red-500 outline-none"
+              />
+            </div>
+            
+          </div>
+          
+          <div className="mt-5 pt-4 border-t border-slate-800/50">
+            <Button 
+              size="sm" variant="destructive" className="w-full bg-red-600 hover:bg-red-500" 
+              disabled={loadingRemove || (!removeVehicleNo && !removeSlotId) || !removeReason}
+              onClick={handleRemoval}
+            >
+              {loadingRemove ? "Processing..." : "Remove Vehicle"}
+            </Button>
+          </div>
+        </div>
+
       </div>
     </div>
   );

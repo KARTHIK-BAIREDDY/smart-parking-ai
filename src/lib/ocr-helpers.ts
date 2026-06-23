@@ -1,613 +1,33 @@
-export const EXPERIMENTAL_FEATURES = false;
+import Tesseract from 'tesseract.js';
 
-console.log("ANPR_BUNDLE_LOADED_V2");
-console.log("OCR_HELPERS_BUILD_20250622_001");
-const YOLO_CONFIDENCE_THRESHOLD = 0.15;
-const YOLO_INPUT_SIZE = 640;
-
-import Tesseract from "tesseract.js";
-
-interface ProcessedImage {
-  src: string;
+export interface ProcessedImage {
   name: string;
-  roi?: [number, number, number, number];
-  width?: number;
-  height?: number;
+  src: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  cvScore?: number;
+  cvPeaks?: number;
+  cvDensity?: number;
 }
 
-function refinePlateCrop(imgData: ImageData, vehicleYLimit: number, basePy: number) {
-  const w = imgData.width;
-  const h = imgData.height;
-  const data = imgData.data;
-
-  // 1. Grayscale
-  const gray = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    gray[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
-  }
-
-  // 2. Sobel X and Y magnitude
-  const mag = new Float32Array(w * h);
-  const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
-  const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
-
-  let maxMag = 0;
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      let px = 0, py = 0;
-      for (let ky = -1; ky <= 1; ky++) {
-        for (let kx = -1; kx <= 1; kx++) {
-          const val = gray[(y + ky) * w + (x + kx)];
-          px += val * sobelX[(ky + 1) * 3 + (kx + 1)];
-          py += val * sobelY[(ky + 1) * 3 + (kx + 1)];
-        }
-      }
-      const m = Math.sqrt(px * px + py * py);
-      mag[y * w + x] = m;
-      if (m > maxMag) maxMag = m;
-    }
-  }
-
-  // 3. Threshold > 80
-  const binary = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const normalized = maxMag > 0 ? (mag[i] / maxMag) * 255 : 0;
-    binary[i] = normalized > 80 ? 255 : 0;
-  }
-
-  // 4. Find connected white regions & compute bounding rectangle
-  const visited = new Uint8Array(w * h);
-  
-  interface Candidate {
-    x: number; y: number; w: number; h: number;
-    centerY: number;
-    aspectRatio: number;
-    fillDensity: number;
-    area: number;
-    score: number;
-    accepted: boolean;
-    rejectionReason: string;
-  }
-  
-  const candidates: Candidate[] = [];
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (binary[y * w + x] === 255 && !visited[y * w + x]) {
-        let minX = x, maxX = x, minY = y, maxY = y;
-        let count = 0;
-        
-        const stack = [x, y];
-        visited[y * w + x] = 1;
-
-        while (stack.length > 0) {
-          const cy = stack.pop()!;
-          const cx = stack.pop()!;
-          count++;
-          if (cx < minX) minX = cx;
-          if (cx > maxX) maxX = cx;
-          if (cy < minY) minY = cy;
-          if (cy > maxY) maxY = cy;
-
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              const nx = cx + dx;
-              const ny = cy + dy;
-              if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-                if (binary[ny * w + nx] === 255 && !visited[ny * w + nx]) {
-                  visited[ny * w + nx] = 1;
-                  stack.push(nx, ny);
-                }
-              }
-            }
-          }
-        }
-
-        const rw = maxX - minX + 1;
-        const rh = maxY - minY + 1;
-        const aspectRatio = rw / rh;
-        const area = rw * rh;
-        const fillDensity = count / area;
-        const centerY = minY + rh / 2;
-        const absoluteY = basePy + minY;
-
-        const candidate: Candidate = {
-          x: minX, y: minY, w: rw, h: rh,
-          centerY, aspectRatio, fillDensity, area,
-          score: 0, accepted: false, rejectionReason: ""
-        };
-
-        // STAGE 1 - Strict Filtration
-        if (rw < 80) {
-          candidate.rejectionReason = `width < 80 (${rw})`;
-        } else if (rh < 20) {
-          candidate.rejectionReason = `height < 20 (${rh})`;
-        } else if (aspectRatio < 0.8 || aspectRatio > 6.5) {
-          console.log("PLATE_AR", aspectRatio);
-          console.log("CONTOUR_BOX_REJECTED_AR");
-          candidate.rejectionReason = `aspect ratio out of bounds (${aspectRatio.toFixed(2)})`;
-        } else if (fillDensity < 0.35 || fillDensity > 0.92) {
-          candidate.rejectionReason = `fill density out of bounds (${fillDensity.toFixed(2)})`;
-        } else if (absoluteY < vehicleYLimit) {
-          candidate.rejectionReason = `too high on vehicle (y=${absoluteY} < limit=${vehicleYLimit})`;
-        } else {
-          // Passed Stage 1
-          console.log("PLATE_AR", aspectRatio);
-          console.log("CONTOUR_BOX_ACCEPTED");
-          candidate.accepted = true;
-          
-          const aspectScore = 1 - Math.abs(aspectRatio - 4.2) / 4.2;
-          const densityScore = 1 - Math.abs(fillDensity - 0.65);
-          candidate.score = (area * 0.35) + (aspectScore * 0.30) + (densityScore * 0.20) + (rw * 0.15);
-        }
-        
-        candidates.push(candidate);
-      }
-    }
-  }
-
-  console.log("--- CANDIDATE CONTOURS ---");
-  candidates.forEach(c => {
-    console.log(`Candidate: x=${c.x}, y=${c.y}, w=${c.w}, h=${c.h}, centerY=${c.centerY}, aspect=${c.aspectRatio.toFixed(2)}, density=${c.fillDensity.toFixed(2)}, score=${c.score.toFixed(2)}, accepted=${c.accepted}, reason=${c.rejectionReason}`);
-  });
-
-  // STAGE 2 - Final Selection
-  const validCandidates = candidates.filter(c => c.accepted);
-  let bestRect = null;
-  let finalSelectedCandidate = null;
-
-  if (validCandidates.length > 0) {
-    validCandidates.sort((a, b) => b.centerY - a.centerY); // LOWEST first (highest Y)
-    
-    if (validCandidates.length > 1 && Math.abs(validCandidates[0].centerY - validCandidates[1].centerY) < 15) {
-      // Tie-breaker using score
-      if (validCandidates[1].score > validCandidates[0].score) {
-         finalSelectedCandidate = validCandidates[1];
-      } else {
-         finalSelectedCandidate = validCandidates[0];
-      }
-    } else {
-      finalSelectedCandidate = validCandidates[0];
-    }
-    
-    console.log("FINAL_SELECTED_PLATE:", finalSelectedCandidate);
-
-    // Final OCR Crop Padding
-    let paddedX = finalSelectedCandidate.x - 6;
-    let paddedY = finalSelectedCandidate.y - 4;
-    let paddedW = finalSelectedCandidate.w + 12;
-    let paddedH = finalSelectedCandidate.h + 8;
-    
-    paddedX = Math.max(0, paddedX);
-    paddedY = Math.max(0, paddedY);
-    paddedW = Math.min(w - paddedX, paddedW);
-    paddedH = Math.min(h - paddedY, paddedH);
-
-    bestRect = { x: paddedX, y: paddedY, w: paddedW, h: paddedH };
-  }
-
-  // 5. Compute deskew angle based on top edge pixels
-  let deskewAngle = 0;
-  if (finalSelectedCandidate) {
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-    let n = 0;
-    
-    const topLimit = finalSelectedCandidate.y + finalSelectedCandidate.h * 0.2;
-    for (let x = finalSelectedCandidate.x; x < finalSelectedCandidate.x + finalSelectedCandidate.w; x++) {
-      for (let y = finalSelectedCandidate.y; y < topLimit; y++) {
-        if (binary[y * w + x] === 255) {
-          sumX += x;
-          sumY += y;
-          sumXY += x * y;
-          sumX2 += x * x;
-          n++;
-          break;
-        }
-      }
-    }
-    
-    if (n > 10) {
-      const denominator = (n * sumX2 - sumX * sumX);
-      if (denominator !== 0) {
-        const slope = (n * sumXY - sumX * sumY) / denominator;
-        const angleRad = Math.atan(slope);
-        deskewAngle = angleRad * (180 / Math.PI);
-      }
-    }
-  }
-
-  return { rect: bestRect, deskewAngle, allCandidates: candidates };
+export interface OcrTelemetry {
+  vehicleType?: string;
+  startTime: number;
+  steps: {
+    name: string;
+    duration: number;
+    success: boolean;
+    details: string;
+  }[];
+  refinedPlateROI?: number[];
+  initialPlateROI?: number[];
+  candidateROIs?: number[][];
+  deskewAngle?: number;
 }
 
-/**
- * Creates multiple variations of the cropped plate image for OCR passes.
- */
-export function preprocessImage(
-  imageSrc: string,
-  vehicleBox: [number, number, number, number],
-  originalDimensions?: { width: number; height: number },
-  vehicleType?: string
-): Promise<{ 
-  passes: ProcessedImage[]; 
-  originalCrop: ProcessedImage; 
-  plateCrop: ProcessedImage; 
-  plateRectLog: string;
-  telemetry: {
-    initialPlateROI: number[],
-    refinedPlateROI: number[],
-    candidateROIs: number[][],
-    deskewAngle: number,
-    yoloConfidence?: number,
-    yoloUsed?: boolean,
-    yoloLatencyMs?: number
-  }
-}> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    let finalRoiSource = "UNKNOWN";
-    img.onload = async () => {
-      try {
-        console.log("PREPROCESS_ENTERED");
-        console.log("PREPROCESS_START");
-        const passes: ProcessedImage[] = [];
-
-        let [vx, vy, vw, vh] = vehicleBox;
-
-        if (originalDimensions) {
-           const scaleX = img.width / originalDimensions.width;
-           const scaleY = img.height / originalDimensions.height;
-           vx *= scaleX;
-           vy *= scaleY;
-           vw *= scaleX;
-           vh *= scaleY;
-        }
-        
-        let px = vx;
-        let py = vy;
-        let pw = vw;
-        let ph = vh;
-        
-        console.log("Vehicle Box", [vx, vy, vw, vh]);
-        console.log("ROI Box (Full Vehicle Crop)", [px, py, pw, ph]);
-
-        const plateRectLog = `Plate Crop relative to vehicle: X:${Math.round(px)}, Y:${Math.round(py)}, W:${Math.round(pw)}, H:${Math.round(ph)}`;
-
-        if (pw <= 0 || ph <= 0) {
-          throw new Error("Invalid plate crop dimensions");
-        }
-
-        // 1. Vehicle Crop (for preview)
-        const vCanvas = document.createElement("canvas");
-        vCanvas.width = vw;
-        vCanvas.height = vh;
-        const vCtx = vCanvas.getContext("2d");
-        if (vCtx) vCtx.drawImage(img, vx, vy, vw, vh, 0, 0, vw, vh);
-        const vehicleCrop: ProcessedImage = { src: vCanvas.toDataURL("image/jpeg"), name: "Vehicle Crop", width: vw, height: vh };
-
-        // 2. Original Plate Crop
-        const canvas = document.createElement("canvas");
-        canvas.width = pw;
-        canvas.height = ph;
-        const ctx = canvas.getContext("2d");
-        
-        const fallbackTelemetry = {
-          initialPlateROI: [px, py, pw, ph],
-          refinedPlateROI: [px, py, pw, ph],
-          candidateROIs: [],
-          deskewAngle: 0
-        };
-
-        if (!ctx) return resolve({ passes: [], originalCrop: vehicleCrop, plateCrop: vehicleCrop, plateRectLog, telemetry: fallbackTelemetry });
-
-        ctx.drawImage(img, px, py, pw, ph, 0, 0, pw, ph);
-        const rawPlateDataUrl = canvas.toDataURL("image/jpeg");
-        const plateCrop: ProcessedImage = { src: rawPlateDataUrl, name: "Plate Crop" };
-        
-        // 1-5. Localize Plate within ROI
-        function localizePlateInROI(roiImageData: ImageData) {
-          const w = roiImageData.width;
-          const h = roiImageData.height;
-          const data = roiImageData.data;
-
-          const gray = new Float32Array(w * h);
-          for (let i = 0; i < w * h; i++) {
-            gray[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
-          }
-
-          const mag = new Float32Array(w * h);
-          const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
-          const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
-
-          let maxMag = 0;
-          for (let y = 1; y < h - 1; y++) {
-            for (let x = 1; x < w - 1; x++) {
-              let px = 0, py = 0;
-              for (let ky = -1; ky <= 1; ky++) {
-                for (let kx = -1; kx <= 1; kx++) {
-                  const val = gray[(y + ky) * w + (x + kx)];
-                  px += val * sobelX[(ky + 1) * 3 + (kx + 1)];
-                  py += val * sobelY[(ky + 1) * 3 + (kx + 1)];
-                }
-              }
-              const m = Math.sqrt(px * px + py * py);
-              mag[y * w + x] = m;
-              if (m > maxMag) maxMag = m;
-            }
-          }
-
-          const binary = new Uint8Array(w * h);
-          for (let i = 0; i < w * h; i++) {
-            const normalized = maxMag > 0 ? (mag[i] / maxMag) * 255 : 0;
-            binary[i] = normalized > 80 ? 255 : 0;
-          }
-
-          const visited = new Uint8Array(w * h);
-          const candidates: { x: number, y: number, w: number, h: number, centerY: number, score: number, valid: boolean }[] = [];
-
-          for (let y = 0; y < h; y++) {
-            for (let x = 0; x < w; x++) {
-              if (binary[y * w + x] === 255 && !visited[y * w + x]) {
-                let minX = x, maxX = x, minY = y, maxY = y;
-                let pixelCount = 0;
-                let edgeDensitySum = 0;
-                
-                const stack = [x, y];
-                visited[y * w + x] = 1;
-
-                while (stack.length > 0) {
-                  const cy = stack.pop()!;
-                  const cx = stack.pop()!;
-                  
-                  pixelCount++;
-                  edgeDensitySum += mag[cy * w + cx];
-                  
-                  if (cx < minX) minX = cx;
-                  if (cx > maxX) maxX = cx;
-                  if (cy < minY) minY = cy;
-                  if (cy > maxY) maxY = cy;
-
-                  for (let dy = -1; dy <= 1; dy++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                      const nx = cx + dx;
-                      const ny = cy + dy;
-                      if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-                        if (binary[ny * w + nx] === 255 && !visited[ny * w + nx]) {
-                          visited[ny * w + nx] = 1;
-                          stack.push(nx, ny);
-                        }
-                      }
-                    }
-                  }
-                }
-
-                const rw = maxX - minX + 1;
-                const rh = maxY - minY + 1;
-                const aspectRatio = rw / rh;
-                const area = rw * rh;
-
-                if (aspectRatio >= 0.8 && aspectRatio <= 6.5 && rw > 40 && rh > 15) {
-                  console.log("PLATE_AR", aspectRatio);
-                  console.log("CONTOUR_BOX_ACCEPTED");
-                  const rectangularity = pixelCount / area; // fill factor
-                  const avgEdgeDensity = edgeDensitySum / pixelCount;
-                  
-                  // Approximate character density by counting "holes" or internal transitions (simplified proxy using edge density & rectangularity)
-                  const characterDensity = Math.min((avgEdgeDensity / maxMag) * rectangularity * 2.0, 1.0);
-                  
-                  const normRect = Math.min(rectangularity, 1.0);
-                  const normEdge = Math.min(avgEdgeDensity / maxMag, 1.0);
-                  const normY = maxY / h; // Location preference: higher Y is closer to bottom
-                  
-                  // Phase 5 Weighted Scoring: 40% rectangularity, 25% edge density, 20% character density, 15% location preference
-                  const score = (normRect * 0.40) + (normEdge * 0.25) + (characterDensity * 0.20) + (normY * 0.15);
-                  
-                  candidates.push({ x: minX, y: minY, w: rw, h: rh, centerY: minY + rh / 2, score, valid: true });
-                } else {
-                  console.log("PLATE_AR", aspectRatio);
-                  console.log("CONTOUR_BOX_REJECTED_AR");
-                }
-              }
-            }
-          }
-
-          let bestCandidate = null;
-          let bestScore = -Infinity;
-
-          for (const c of candidates) {
-            if (c.score > bestScore) {
-              bestScore = c.score;
-              bestCandidate = c;
-            }
-          }
-
-          return { bestCandidate, candidates };
-        }
-        
-        // Advanced Refinement
-        let rX = px;
-        let rY = py;
-        let rW = pw;
-        let rH = ph;
-        let deskewAngle = 0;
-
-        const candidateROIs: number[][] = [];
-        
-        // API Call to Python YOLOv8 Microservice
-        let yoloResult = null;
-        let yoloLatency = 0;
-        let yoloConfidence = 0.0;
-        let yoloUsed = false;
-
-        // YOLO DISABLED: Falling back to contour localization (Active during successful tests)
-        const roiImgData = ctx.getImageData(0, 0, pw, ph);
-        const { bestCandidate: refinedRect, candidates: allLocCandidates } = localizePlateInROI(roiImgData);
-
-        console.log("USING_FALLBACK_ROI");
-        console.log("FALLBACK_ACTIVATED");
-        finalRoiSource = "CONTOUR_LOCALIZATION";
-
-        console.log(`LOCALIZATION_CANDIDATE_COUNT: ${allLocCandidates.length}`);
-        if (refinedRect) {
-          console.log(`LOCALIZATION_WINNER_X: ${refinedRect.x}`);
-          console.log(`LOCALIZATION_WINNER_Y: ${refinedRect.y}`);
-          console.log(`LOCALIZATION_WINNER_W: ${refinedRect.w}`);
-          console.log(`LOCALIZATION_WINNER_H: ${refinedRect.h}`);
-          console.log(`LOCALIZATION_WINNER_SCORE: ${refinedRect.score}`);
-        } else {
-          console.log("LOCALIZATION_WINNER_X: NONE");
-          console.log("LOCALIZATION_WINNER_Y: NONE");
-          console.log("LOCALIZATION_WINNER_W: NONE");
-          console.log("LOCALIZATION_WINNER_H: NONE");
-          console.log("LOCALIZATION_WINNER_SCORE: NONE");
-        }
-
-        for (const c of allLocCandidates) {
-          candidateROIs.push([px + c.x, py + c.y, c.w, c.h, c.score]);
-        }
-
-        if (refinedRect) {
-          rX = px + refinedRect.x;
-          rY = py + refinedRect.y;
-          rW = refinedRect.w;
-          rH = refinedRect.h;
-        }
-
-        // Draw the winning contour box on vehicle_crop.png and save it
-        const debugVehicleCanvas = document.createElement("canvas");
-        debugVehicleCanvas.width = pw;
-        debugVehicleCanvas.height = ph;
-        const debugVehicleCtx = debugVehicleCanvas.getContext("2d");
-        if (debugVehicleCtx) {
-          debugVehicleCtx.drawImage(img, px, py, pw, ph, 0, 0, pw, ph);
-          if (refinedRect) {
-            debugVehicleCtx.strokeStyle = "red";
-            debugVehicleCtx.lineWidth = 2;
-            debugVehicleCtx.strokeRect(refinedRect.x, refinedRect.y, refinedRect.w, refinedRect.h);
-          }
-          const a = document.createElement("a");
-          a.href = debugVehicleCanvas.toDataURL("image/png");
-          a.download = "vehicle_crop.png";
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-        }
-
-        console.log("ROI_SELECTED");
-        console.log("ROI_SOURCE_VALUE", finalRoiSource);
-        console.log(`LOCALIZED BOX: ${Math.round(rX)},${Math.round(rY)},${Math.round(rW)},${Math.round(rH)}`);
-
-
-          // 7. Create new preview: Localized Plate
-          const locCanvas = document.createElement("canvas");
-          locCanvas.width = rW;
-          locCanvas.height = rH;
-          const locCtx = locCanvas.getContext("2d");
-          if (locCtx) {
-            locCtx.drawImage(img, rX, rY, rW, rH, 0, 0, rW, rH);
-            passes.push({ src: locCanvas.toDataURL("image/jpeg"), name: "Localized Plate", roi: [rX, rY, rW, rH] });
-
-            const aLoc = document.createElement("a");
-            aLoc.href = locCanvas.toDataURL("image/png");
-            aLoc.download = "localized_plate.png";
-            document.body.appendChild(aLoc);
-            aLoc.click();
-            document.body.removeChild(aLoc);
-          }
-
-
-        // Pass 2: Upscaled (12x) on REFINED crop
-        const scale = 12;
-        const scaleCanvas = document.createElement("canvas");
-        scaleCanvas.width = rW * scale;
-        scaleCanvas.height = rH * scale;
-        const sctx = scaleCanvas.getContext("2d");
-        
-        if (sctx) {
-          console.log("OCR input dimensions:", scaleCanvas.width, scaleCanvas.height);
-          if (scaleCanvas.width <= 0 || scaleCanvas.height <= 0 || rW >= vw * 0.95 || rH >= vh * 0.95) {
-            throw new Error("OCR received invalid crop — likely coordinate mapping failure");
-          }
-          sctx.imageSmoothingEnabled = false;
-          sctx.drawImage(img, rX, rY, rW, rH, 0, 0, scaleCanvas.width, scaleCanvas.height);
-          passes.push({ src: scaleCanvas.toDataURL("image/jpeg"), name: "Final OCR Input Crop", roi: [rX, rY, rW, rH] });
-
-          // Pass 3: Grayscale
-          const grayCanvas = document.createElement("canvas");
-          grayCanvas.width = scaleCanvas.width;
-          grayCanvas.height = scaleCanvas.height;
-          const gctx = grayCanvas.getContext("2d");
-          if (gctx) {
-             gctx.filter = 'grayscale(100%)';
-             gctx.drawImage(scaleCanvas, 0, 0);
-             passes.push({ src: grayCanvas.toDataURL("image/jpeg"), name: "Grayscale", roi: [rX, rY, rW, rH] });
-          }
-
-          // Pass 4: Binary Threshold (140)
-          const imgData = sctx.getImageData(0, 0, scaleCanvas.width, scaleCanvas.height);
-          const data = imgData.data;
-          for (let i = 0; i < data.length; i += 4) {
-            const gray = (data[i] + data[i+1] + data[i+2]) / 3;
-            const val = gray > 140 ? 255 : 0;
-            data[i] = val;
-            data[i + 1] = val;
-            data[i + 2] = val;
-          }
-          sctx.putImageData(imgData, 0, 0);
-          passes.push({ src: scaleCanvas.toDataURL("image/jpeg"), name: "Thresholded Crop", roi: [rX, rY, rW, rH] });
-          
-          // Pass 5: Sharpened
-          const sharpCanvas = document.createElement("canvas");
-          sharpCanvas.width = scaleCanvas.width;
-          sharpCanvas.height = scaleCanvas.height;
-          const sharpCtx = sharpCanvas.getContext("2d");
-          if (sharpCtx) {
-             sharpCtx.filter = 'contrast(1.3) brightness(1.1) saturate(0)';
-             sharpCtx.drawImage(scaleCanvas, 0, 0); // draw the thresholded image
-             passes.push({ src: sharpCanvas.toDataURL("image/jpeg"), name: "Sharpened Crop", roi: [rX, rY, rW, rH] });
-          }
-        }
-
-        console.log("PREPROCESS_EXITED");
-
-        if (passes.length > 0) {
-          const aFinal = document.createElement("a");
-          aFinal.href = passes[passes.length - 1].src;
-          aFinal.download = "final_ocr_input.png";
-          document.body.appendChild(aFinal);
-          aFinal.click();
-          document.body.removeChild(aFinal);
-        }
-
-        resolve({ 
-          passes, 
-          originalCrop: vehicleCrop, 
-          plateCrop, 
-          plateRectLog,
-          telemetry: {
-            initialPlateROI: [px, py, pw, ph],
-            refinedPlateROI: [rX, rY, rW, rH],
-            candidateROIs,
-            deskewAngle: deskewAngle,
-            yoloConfidence,
-            yoloUsed,
-            yoloLatencyMs: yoloLatency
-          }
-        });
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err || "Unknown Preprocessing Error");
-        console.error("Preprocessing FAILURE:", errorMsg);
-        reject(new Error(errorMsg));
-      }
-    };
-    img.onerror = () => {
-      console.error("Preprocessing FAILURE: Image failed to load");
-      reject(new Error("Image failed to load"));
-    };
-    img.src = imageSrc;
-  });
-}
-
-function calculatePixelStats(src: string): Promise<{ width: number; height: number; avgBrightness: number; minPixel: number; maxPixel: number }> {
+function calculatePixelStats(src: string): Promise<{width: number, height: number, avgBrightness: number, minPixel: number, maxPixel: number}> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -615,15 +35,17 @@ function calculatePixelStats(src: string): Promise<{ width: number; height: numb
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
-      if (!ctx) return resolve({ width: img.width, height: img.height, avgBrightness: 0, minPixel: 0, maxPixel: 0 });
+      if (!ctx) return resolve({width: 0, height: 0, avgBrightness: 0, minPixel: 0, maxPixel: 0});
       ctx.drawImage(img, 0, 0);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let sum = 0, min = 255, max = 0;
-      for (let i = 0; i < imgData.length; i += 4) {
-        const brightness = imgData[i] * 0.299 + imgData[i+1] * 0.587 + imgData[i+2] * 0.114;
-        sum += brightness;
-        if (brightness < min) min = brightness;
-        if (brightness > max) max = brightness;
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      let sum = 0;
+      let min = 255;
+      let max = 0;
+      for (let i = 0; i < imgData.data.length; i += 4) {
+        const v = imgData.data[i];
+        sum += v;
+        if (v < min) min = v;
+        if (v > max) max = v;
       }
       resolve({
         width: img.width,
@@ -637,9 +59,314 @@ function calculatePixelStats(src: string): Promise<{ width: number; height: numb
   });
 }
 
-/**
- * Runs multi-pass OCR on a cropped region of the image.
- */
+function generateCandidates(vehicleImageData: ImageData): any[] {
+  const w = vehicleImageData.width;
+  const h = vehicleImageData.height;
+  const data = vehicleImageData.data;
+
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    gray[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
+  }
+
+  const mag = new Float32Array(w * h);
+  const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+  let maxMag = 0;
+  
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      let cx = 0;
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const val = gray[(y + ky) * w + (x + kx)];
+          cx += val * sobelX[(ky + 1) * 3 + (kx + 1)];
+        }
+      }
+      const m = Math.abs(cx);
+      mag[y * w + x] = m;
+      if (m > maxMag) maxMag = m;
+    }
+  }
+
+  for (let i = 0; i < w * h; i++) {
+    mag[i] = maxMag > 0 ? (mag[i] / maxMag) : 0;
+  }
+
+  const candidates: any[] = [];
+  
+  const windowSizes = [
+    { w: Math.round(w * 0.4), h: Math.round(h * 0.15) },
+    { w: Math.round(w * 0.6), h: Math.round(h * 0.15) },
+    { w: Math.round(w * 0.5), h: Math.round(h * 0.25) },
+    { w: Math.round(w * 0.4), h: Math.round(h * 0.30) },
+  ];
+
+  const stepX = Math.round(w * 0.05);
+  const stepY = Math.round(h * 0.05);
+
+  for (const size of windowSizes) {
+    if (size.w < 30 || size.h < 15) continue;
+    
+    const startY = Math.round(h * 0.15); 
+    
+    for (let y = startY; y <= h - size.h; y += stepY) {
+      for (let x = 0; x <= w - size.w; x += stepX) {
+        let totalEdges = 0;
+        const vProj = new Float32Array(size.w);
+        
+        for (let px = 0; px < size.w; px++) {
+          let colSum = 0;
+          for (let py = 0; py < size.h; py++) {
+            const m = mag[(y + py) * w + (x + px)];
+            if (m > 0.2) {
+              colSum += m;
+              totalEdges += m;
+            }
+          }
+          vProj[px] = colSum;
+        }
+
+        let peaks = 0;
+        let inPeak = false;
+        const peakThreshold = (totalEdges / size.w) * 0.5; 
+        
+        for (let px = 0; px < size.w; px++) {
+          if (vProj[px] > peakThreshold) {
+            if (!inPeak) { peaks++; inPeak = true; }
+          } else {
+            inPeak = false;
+          }
+        }
+
+        const density = totalEdges / (size.w * size.h);
+        
+        let peakScore = 0;
+        if (peaks >= 4 && peaks <= 12) peakScore = 1.0;
+        else if (peaks >= 2 && peaks <= 16) peakScore = 0.5;
+        
+        const score = (density * 5.0) + peakScore;
+
+        if (density > 0.02 && peakScore > 0) {
+          let firstPx = 0;
+          while (firstPx < size.w && vProj[firstPx] < peakThreshold * 0.5) firstPx++;
+          let lastPx = size.w - 1;
+          while (lastPx >= 0 && vProj[lastPx] < peakThreshold * 0.5) lastPx--;
+          
+          if (lastPx > firstPx + 10) {
+            const tightX = x + firstPx;
+            const tightW = lastPx - firstPx + 1;
+            
+            const hProj = new Float32Array(size.h);
+            let totalHT = 0;
+            for (let py = 0; py < size.h; py++) {
+              let rowSum = 0;
+              for (let px = firstPx; px <= lastPx; px++) {
+                rowSum += mag[(y + py) * w + (x + px)];
+              }
+              hProj[py] = rowSum;
+              totalHT += rowSum;
+            }
+            
+            const hThreshold = (totalHT / size.h) * 0.5;
+            let firstPy = 0;
+            while (firstPy < size.h && hProj[firstPy] < hThreshold) firstPy++;
+            let lastPy = size.h - 1;
+            while (lastPy >= 0 && hProj[lastPy] < hThreshold) lastPy--;
+            
+            if (lastPy > firstPy + 5) {
+              const tightY = y + firstPy;
+              const tightH = lastPy - firstPy + 1;
+              
+              const padX = Math.round(tightW * 0.1);
+              const padY = Math.round(tightH * 0.2);
+              const finalX = Math.max(0, tightX - padX);
+              const finalY = Math.max(0, tightY - padY);
+              const finalW = Math.min(w - finalX, tightW + padX * 2);
+              const finalH = Math.min(h - finalY, tightH + padY * 2);
+
+              candidates.push({ x: finalX, y: finalY, w: finalW, h: finalH, score, peaks, density });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const finalCandidates: any[] = [];
+  
+  for (const c of candidates) {
+    let overlap = false;
+    for (const fc of finalCandidates) {
+      const ix = Math.max(c.x, fc.x);
+      const iy = Math.max(c.y, fc.y);
+      const iw = Math.min(c.x + c.w, fc.x + fc.w) - ix;
+      const ih = Math.min(c.y + c.h, fc.y + fc.h) - iy;
+      
+      if (iw > 0 && ih > 0) {
+        const intersection = iw * ih;
+        const union = (c.w * c.h) + (fc.w * fc.h) - intersection;
+        if (intersection / union > 0.3) {
+          overlap = true;
+          break;
+        }
+      }
+    }
+    if (!overlap) {
+      finalCandidates.push(c);
+    }
+  }
+
+  return finalCandidates.slice(0, 3);
+}
+
+export async function preprocessImage(
+  imageSrc: string,
+  detection: [number, number, number, number],
+  originalDimensions?: { width: number; height: number },
+  vehicleType?: string
+) {
+  const ocrTelemetry: OcrTelemetry = {
+    vehicleType: vehicleType,
+    startTime: Date.now(),
+    steps: []
+  };
+
+  const canvas = document.createElement("canvas");
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = imageSrc;
+  });
+
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not get 2d context");
+  ctx.drawImage(img, 0, 0);
+
+  const vx = Math.max(0, Math.floor(detection[0]));
+  const vy = Math.max(0, Math.floor(detection[1]));
+  const vw = Math.min(canvas.width - vx, Math.floor(detection[2]));
+  const vh = Math.min(canvas.height - vy, Math.floor(detection[3]));
+
+  const originalCrop: ProcessedImage = {
+    name: "Original",
+    src: canvas.toDataURL("image/jpeg"),
+    x: vx,
+    y: vy,
+    w: vw,
+    h: vh
+  };
+
+  const vehicleCanvas = document.createElement("canvas");
+  vehicleCanvas.width = vw;
+  vehicleCanvas.height = vh;
+  const vCtx = vehicleCanvas.getContext("2d");
+  if (!vCtx) throw new Error("Could not get vehicle canvas context");
+
+  vCtx.drawImage(
+    canvas,
+    vx, vy, vw, vh,
+    0, 0, vw, vh
+  );
+
+  const vehicleImageData = vCtx.getImageData(0, 0, vw, vh);
+  
+  const startTime = performance.now();
+  const cvCandidates = generateCandidates(vehicleImageData);
+  
+  ocrTelemetry.candidateROIs = cvCandidates.map(c => [vx + c.x, vy + c.y, c.w, c.h, c.score, c.peaks, c.density]);
+  
+  ocrTelemetry.steps.push({
+    name: "CV Candidate Generation",
+    duration: performance.now() - startTime,
+    success: cvCandidates.length > 0,
+    details: `Generated ${cvCandidates.length} potential plate regions via CV projection analysis`
+  });
+
+  const candidatesData: ProcessedImage[] = [];
+
+  for (let i = 0; i < cvCandidates.length; i++) {
+    const candidate = cvCandidates[i];
+    const px = Math.floor(candidate.x);
+    const py = Math.floor(candidate.y);
+    const pw = Math.floor(candidate.w);
+    const ph = Math.floor(candidate.h);
+
+    const plateCanvas = document.createElement("canvas");
+    plateCanvas.width = pw;
+    plateCanvas.height = ph;
+    const pCtx = plateCanvas.getContext("2d");
+    if (!pCtx) continue;
+
+    pCtx.drawImage(
+      vehicleCanvas,
+      px, py, pw, ph,
+      0, 0, pw, ph
+    );
+
+    const scale = 12;
+    const scaleCanvas = document.createElement("canvas");
+    scaleCanvas.width = pw * scale;
+    scaleCanvas.height = ph * scale;
+    const sCtx = scaleCanvas.getContext("2d");
+    if (!sCtx) continue;
+    sCtx.imageSmoothingEnabled = false;
+    sCtx.drawImage(plateCanvas, 0, 0, scaleCanvas.width, scaleCanvas.height);
+
+    const imgData = sCtx.getImageData(0, 0, scaleCanvas.width, scaleCanvas.height);
+    const data = imgData.data;
+
+    for (let j = 0; j < data.length; j += 4) {
+      const r = data[j];
+      const g = data[j + 1];
+      const b = data[j + 2];
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      const val = gray > 140 ? 255 : 0;
+      data[j] = val;
+      data[j + 1] = val;
+      data[j + 2] = val;
+    }
+    sCtx.putImageData(imgData, 0, 0);
+    
+    const sharpenData = sCtx.getImageData(0, 0, scaleCanvas.width, scaleCanvas.height);
+    const sd = sharpenData.data;
+    const sw = scaleCanvas.width;
+    const sh = scaleCanvas.height;
+    for (let sy = 1; sy < sh - 1; sy++) {
+      for (let sx = 1; sx < sw - 1; sx++) {
+        const idx = (sy * sw + sx) * 4;
+        const val = 5 * sd[idx] - sd[idx - 4] - sd[idx + 4] - sd[idx - sw * 4] - sd[idx + sw * 4];
+        const v = Math.min(255, Math.max(0, val));
+        sd[idx] = v; sd[idx+1] = v; sd[idx+2] = v;
+      }
+    }
+    sCtx.putImageData(sharpenData, 0, 0);
+
+    candidatesData.push({
+      name: `Candidate ${i+1}`,
+      src: scaleCanvas.toDataURL("image/jpeg", 0.95),
+      x: vx + px,
+      y: vy + py,
+      w: pw,
+      h: ph,
+      cvScore: candidate.score,
+      cvPeaks: candidate.peaks,
+      cvDensity: candidate.density
+    });
+  }
+
+  return { 
+    passes: [originalCrop, ...candidatesData], 
+    originalCrop, 
+    plateCrop: originalCrop, 
+    plateRectLog: { x: vx, y: vy, w: vw, h: vh },
+    telemetry: ocrTelemetry
+  };
+}
+
 export async function runMultiPassOCR(
   imageSrc: string,
   vehicleBox: [number, number, number, number],
@@ -651,10 +378,10 @@ export async function runMultiPassOCR(
   debugLog: string[]; 
   previews: ProcessedImage[];
   boxes?: {
-    initialPlateROI: number[],
-    refinedPlateROI: number[],
-    candidateROIs: number[][],
-    deskewAngle: number
+    initialPlateROI?: number[],
+    refinedPlateROI?: number[],
+    candidateROIs?: number[][],
+    deskewAngle?: number
   }
 } | null> {
   const debugLog: string[] = [];
@@ -663,18 +390,16 @@ export async function runMultiPassOCR(
   console.log("Vehicle Box:", vehicleBox);
 
   try {
-    const { passes, originalCrop, plateCrop, plateRectLog, telemetry } = await preprocessImage(
+    const { passes, originalCrop, telemetry } = await preprocessImage(
       imageSrc, 
       vehicleBox, 
       originalDimensions,
       vehicleType
     );
-    debugLog.push(plateRectLog);
+    debugLog.push(JSON.stringify(vehicleBox));
 
     if (passes.length === 0) {
-      debugLog.push("Failed to preprocess image crop.");
-      console.error("OCR FAILURE", "Failed to preprocess image crop.");
-      console.log(`OCR OUTPUT:  \nConfidence: 0`);
+      debugLog.push("Failed to generate CV candidates.");
       return { 
         text: "", 
         confidence: 0, 
@@ -684,56 +409,30 @@ export async function runMultiPassOCR(
       };
     }
 
-    if (telemetry.refinedPlateROI && (telemetry.refinedPlateROI[2] < 120 || telemetry.refinedPlateROI[3] < 30)) {
-      debugLog.push(`OCR rejected: Crop too small (W:${Math.round(telemetry.refinedPlateROI[2])}, H:${Math.round(telemetry.refinedPlateROI[3])})`);
-      console.error("OCR FAILURE", "Crop too small.");
-      return {
-        text: "",
-        confidence: 0,
-        debugLog,
-        previews: [originalCrop, plateCrop, ...passes.slice(0, 1)], // Include Original, Initial ROI, Localized Plate
-        boxes: telemetry
-      };
-    }
-
-    let bestResult: { text: string; confidence: number; name: string; isValidFormat?: boolean } | null = null;
-    const indianPlateRegex = /^[A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{4}$/;
-    console.log("Tesseract Input Ready. Number of passes:", passes.length);
-
-    if (telemetry.yoloUsed) {
-      console.log("USING_YOLO_ROI");
-      console.log("final_roi_source: YOLO");
-    } else {
-      console.log("USING_FALLBACK_ROI");
-      console.log("final_roi_source: FALLBACK");
-    }
-    console.log(`final_roi_width: ${Math.round(telemetry.refinedPlateROI[2])}`);
-    console.log(`final_roi_height: ${Math.round(telemetry.refinedPlateROI[3])}`);
-
-    // STEP 2: Save actual OCR input image (MOVED TO preprocessImage)
-
     const ocrResult = await executeOCR(passes, debugLog);
-    bestResult = ocrResult?.bestResult || null;
+    const bestResult = ocrResult?.bestResult || null;
 
     if (!bestResult) {
-      debugLog.push("All OCR passes failed to produce valid text.");
-      console.log(`OCR OUTPUT:  \nConfidence: 0`);
+      debugLog.push("All OCR candidates failed.");
       return { 
         text: "", 
         confidence: 0, 
         debugLog, 
-        previews: passes,
+        previews: [originalCrop, ...passes],
         boxes: telemetry
       };
     }
 
-    console.log(`FINAL SELECTED TEXT: ${bestResult.text} (${bestResult.confidence}%) from ${bestResult.name}`);
+    const winningPass = passes.find(p => p.name === bestResult.name);
+    if (winningPass) {
+      telemetry.refinedPlateROI = [winningPass.x!, winningPass.y!, winningPass.w!, winningPass.h!];
+    }
     
     return {
       text: bestResult.text,
       confidence: bestResult.confidence,
       debugLog,
-      previews: [originalCrop, plateCrop, ...passes.filter(p => p.name !== "Original" && p.name !== "Plate Crop")],
+      previews: [originalCrop, ...passes],
       boxes: telemetry
     };
   } catch (error: any) {
@@ -749,9 +448,6 @@ export async function runMultiPassOCR(
   }
 }
 
-/**
- * Executes Tesseract OCR on a given array of image passes.
- */
 export async function executeOCR(passes: ProcessedImage[], debugLog: string[]): Promise<{
   bestResult: { text: string; confidence: number; name: string; isValidFormat?: boolean } | null;
   allResults: { name: string; text: string; rawText: string; confidence: number }[];
@@ -761,9 +457,6 @@ export async function executeOCR(passes: ProcessedImage[], debugLog: string[]): 
   const allResults: { name: string; text: string; rawText: string; confidence: number }[] = [];
   const indianPlateRegex = /^[A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{4}$/;
 
-  const votingPasses = passes;
-
-  // Network diagnostic
   try {
     const workerRes = await fetch("/tesseract/worker.min.js");
     if (!workerRes.ok) throw new Error("OCR worker file missing");
@@ -771,18 +464,10 @@ export async function executeOCR(passes: ProcessedImage[], debugLog: string[]): 
     throw new Error(`Local Tesseract asset missing: ${e.message}`);
   }
 
-  for (const pass of votingPasses) {
-    debugLog.push(`--- OCR Pass: ${pass.name} ---`);
-    console.log(`--- OCR Pass: ${pass.name} ---`);
+  for (const pass of passes) {
+    debugLog.push(`--- Evaluating ${pass.name} ---`);
+    debugLog.push(`CV Score: ${pass.cvScore?.toFixed(2)} (Peaks: ${pass.cvPeaks})`);
     
-    const stats = await calculatePixelStats(pass.src);
-    console.log(`OCR PASS: ${pass.name}`);
-    console.log(`Width: ${stats.width}`);
-    console.log(`Height: ${stats.height}`);
-    console.log(`Average Brightness: ${stats.avgBrightness}`);
-    console.log(`Min Pixel: ${stats.minPixel}`);
-    console.log(`Max Pixel: ${stats.maxPixel}`);
-
     try {
       const origin = typeof window !== "undefined" ? window.location.origin : "";
       
@@ -797,69 +482,49 @@ export async function executeOCR(passes: ProcessedImage[], debugLog: string[]): 
         tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK
       });
 
-      console.log("TESSERACT CONFIG:", {
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-        psm: Tesseract.PSM.SINGLE_BLOCK,
-        oem: 'DEFAULT (or worker default)',
-        language: 'eng'
-      });
-
-      console.log(`OCR INPUT SOURCE: ${pass.name}`);
-      if (pass.roi) {
-        console.log(`OCR ROI: ${Math.round(pass.roi[0])},${Math.round(pass.roi[1])},${Math.round(pass.roi[2])},${Math.round(pass.roi[3])}`);
-      } else {
-        console.log(`OCR ROI: UNKNOWN`);
-      }
-
       const { data } = await worker.recognize(pass.src);
       await worker.terminate();
 
-      // Only strip completely invalid characters to evaluate raw OCR
       const rawText = data.text.trim();
       const text = rawText.replace(/[^A-Z0-9]/gi, "").toUpperCase();
       const conf = data.confidence;
 
-      debugLog.push(`Result: "${text}" (Raw: "${rawText}") - Conf: ${Math.round(conf)}%`);
-      console.log(`RAW OCR:\n${rawText}`);
-      console.log(`NORMALIZED OCR:\n${text}`);
-      console.log(`CONFIDENCE:\n${Math.round(conf)}`);
+      debugLog.push(`OCR Result: "${text}" - Conf: ${Math.round(conf)}%`);
 
-      if (!text) {
-        debugLog.push(`Rejected: Empty text`);
+      if (!text || text.length < 3) {
+        debugLog.push(`Rejected: Text too short`);
         continue;
       }
 
-      // Check regex
       const matchesRegex = indianPlateRegex.test(text);
-      console.log(`REGEX MATCH:\n${matchesRegex}`);
       
-      console.log({
-        passName: pass.name,
-        text: text,
-        confidence: conf
-      });
+      let ocrScore = conf;
+      if (matchesRegex) ocrScore += 50; 
+      ocrScore += text.length * 2; 
+      
+      const combinedScore = (pass.cvScore! * 20) + ocrScore;
 
-      if (matchesRegex) {
-        // If it matches exact Indian format, prioritize it highly
-        if (!bestResult || !bestResult.isValidFormat || conf > bestResult.confidence) {
-          bestResult = { text, confidence: conf, name: pass.name, isValidFormat: true };
-          debugLog.push(`Accepted: Best match (valid format)`);
-        } else {
-          debugLog.push(`Ignored: Valid format, but lower confidence than previous best`);
-        }
-      } else {
-        debugLog.push(`REJECTION REASON:\nfailed Indian plate pattern`);
-        // We still keep the best text even if it fails regex, so it can be sent to UI for debugging
-        if (!bestResult || (!bestResult.isValidFormat && conf > bestResult.confidence)) {
-          bestResult = { text, confidence: conf, name: pass.name, isValidFormat: false };
-        }
+      let currentBestScore = 0;
+      if (bestResult) {
+         currentBestScore = bestResult.confidence; 
+      }
+
+      if (combinedScore > currentBestScore) {
+          bestResult = { text, confidence: combinedScore, name: pass.name, isValidFormat: matchesRegex };
+          debugLog.push(`New Winner! Score: ${Math.round(combinedScore)}`);
       }
 
       allResults.push({ name: pass.name, text, rawText, confidence: conf });
     } catch (e: any) {
       debugLog.push(`Error in ${pass.name}: ${e.message}`);
-      console.error(`Error in OCR pass ${pass.name}:`, e);
     }
+  }
+
+  if (bestResult) {
+      const actualResult = allResults.find(r => r.name === bestResult!.name);
+      if (actualResult) {
+          bestResult.confidence = actualResult.confidence;
+      }
   }
 
   console.log("OCR_COMPLETE");

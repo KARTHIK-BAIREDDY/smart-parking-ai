@@ -16,14 +16,6 @@ function AdminLoginForm() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
-  useEffect(() => {
-    if (status === "authenticated" && session?.user) {
-      if (isAdminRole((session.user as any).role)) {
-        router.push("/admin/dashboard");
-      }
-    }
-  }, [status, session, router]);
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -43,11 +35,10 @@ function AdminLoginForm() {
     }
   };
 
-  if (status === "loading" || (status === "authenticated" && isAdminRole((session?.user as any)?.role))) {
+  if (status === "loading") {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-gray-400">
         <Loader2 className="w-10 h-10 animate-spin text-amber-400 mb-4" />
-        <p className="text-sm font-mono animate-pulse">Verifying access...</p>
       </div>
     );
   }

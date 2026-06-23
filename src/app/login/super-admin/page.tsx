@@ -11,23 +11,14 @@ function SuperAdminLoginForm() {
   const { data: session, status } = useSession();
   const router = useRouter();
 
-  useEffect(() => {
-    if (status === "authenticated" && session?.user) {
-      if (isSuperAdminRole((session.user as any).role)) {
-        router.push("/admin/dashboard");
-      }
-    }
-  }, [status, session, router]);
-
   const handleGoogleSignIn = () => {
     signIn("google", { callbackUrl: "/admin/dashboard" });
   };
 
-  if (status === "loading" || (status === "authenticated" && isSuperAdminRole((session?.user as any)?.role))) {
+  if (status === "loading") {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-gray-400">
         <Loader2 className="w-10 h-10 animate-spin text-red-400 mb-4" />
-        <p className="text-sm font-mono animate-pulse">Verifying super admin access...</p>
       </div>
     );
   }

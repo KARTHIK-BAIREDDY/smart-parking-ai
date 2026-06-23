@@ -18,7 +18,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const {
+    let {
       vehicleId,    // plate number from OCR
       placeId,
       vehicleType = "Car",
@@ -64,12 +64,22 @@ export async function POST(request: Request) {
     }
 
     // 1. Verify place exists
-    const place = await db.collection("parking_places").findOne({ id: placeId });
+    let place = await db.collection("parking_places").findOne({ id: placeId });
     if (!place) {
-      return NextResponse.json(
-        { success: false, error: "Parking place not found" },
-        { status: 404 }
-      );
+      const allPlaces = await db.collection("parking_places").find({}).toArray();
+      console.log("Available parking places:", allPlaces);
+      console.log("Requested place:", placeId);
+
+      if (allPlaces.length === 1) {
+        place = allPlaces[0];
+        placeId = place.id; // Update placeId so downstream queries use the correct one
+        console.log(`Automatically fallback to only available parking place: ${placeId}`);
+      } else {
+        return NextResponse.json(
+          { success: false, error: "Parking place not found" },
+          { status: 404 }
+        );
+      }
     }
     const placeName = place.name || placeId;
 
@@ -147,10 +157,13 @@ export async function POST(request: Request) {
     }
 
     // 4. Active Session check
+    console.log("OCR_RESULT_BEFORE_DB:", normalizedPlate);
     const activeSession = await db.collection("parking_sessions").findOne({
       vehicleNumber: normalizedPlate,
       status: "active"
     });
+    console.log("DB_MATCH_FOUND:", !!activeSession);
+    console.log("DB_SESSION_PLATE:", activeSession ? activeSession.vehicleNumber : null);
 
     if (activeSession) {
       return NextResponse.json(
@@ -314,6 +327,7 @@ export async function POST(request: Request) {
       status: "active",
     };
 
+    console.log("FINAL_RESPONSE_PLATE:", response.vehicleNumber);
     return NextResponse.json(response, { status: 201 });
   } catch(err: any) {
     logger.error("POST /api/slots/assign ERROR:", err as Error, { component: "AssignAPI" });

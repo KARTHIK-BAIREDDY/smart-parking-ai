@@ -16,7 +16,7 @@ export default function Navbar() {
 
   const authLinks = session
     ? [
-        { href: "/dashboard", label: "Dashboard", icon: Car },
+        { href: "/manage-vehicles", label: "Manage Vehicles", icon: Car },
         { href: "/my-parking", label: "My Parking", icon: Clock },
         { href: "/notifications", label: "Notifications", icon: Bell, count: unreadCount },
         { href: "/profile", label: "Profile", icon: User },

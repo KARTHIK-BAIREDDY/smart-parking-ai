@@ -23,7 +23,7 @@ export function isUserRole(role: string | undefined | null): role is "user" {
 }
 
 export function getRoleRedirect(role: UserRole): string {
-  return isAdminRole(role) ? "/admin/dashboard" : "/dashboard";
+  return isAdminRole(role) ? "/admin/dashboard" : "/parking";
 }
 
 /** Normalize role from DB — never trust client-supplied role on registration. */

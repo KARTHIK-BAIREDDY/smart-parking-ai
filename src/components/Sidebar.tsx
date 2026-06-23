@@ -15,7 +15,6 @@ import {
   LayoutGrid,
   Camera,
   Users,
-  Settings2,
   LogOut,
   BarChart2,
   Menu,
@@ -27,9 +26,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useNotifications } from "@/lib/context/NotificationContext";
 
 const USER_NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/parking", label: "Find Parking", icon: MapPin },
   { href: "/my-parking", label: "My Parking", icon: Clock },
+  { href: "/manage-vehicles", label: "Manage Vehicles", icon: Car },
   { href: "/history", label: "Parking History", icon: History },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/profile", label: "Profile", icon: User },
@@ -39,11 +38,12 @@ const ADMIN_NAV_ITEMS = [
   { href: "/admin/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/admin/parking", label: "Parking Places", icon: MapPin },
   { href: "/admin/slots", label: "Slot Management", icon: Car },
-  { href: "/admin/vehicles", label: "Vehicles", icon: Car },
+  { href: "/admin/vehicles", label: "Vehicle Approvals", icon: Car },
+  { href: "/admin/registered-vehicles", label: "Registered Vehicles", icon: Car },
+  { href: "/admin/registered-users", label: "Registered Users", icon: Users },
   { href: "/admin/cameras/entry", label: "Entry Camera", icon: Camera },
   { href: "/admin/cameras/exit", label: "Exit Camera", icon: Camera },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart2 },
-  { href: "/admin/settings", label: "Settings", icon: Settings2 },
 ];
 
 const SUPER_ADMIN_ITEMS = [
@@ -89,9 +89,9 @@ export default function Sidebar() {
 
   if (isAdminRoute && isSuperAdmin) {
     navItems = [
-      ...ADMIN_NAV_ITEMS.slice(0, 3), // Insert after Slot Management
+      ...ADMIN_NAV_ITEMS.slice(0, 6), // Insert after Registered Users
       ...SUPER_ADMIN_ITEMS,
-      ...ADMIN_NAV_ITEMS.slice(3),
+      ...ADMIN_NAV_ITEMS.slice(6),
     ];
   }
 

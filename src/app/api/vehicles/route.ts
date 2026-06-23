@@ -36,8 +36,19 @@ export async function GET(request: Request) {
         {
           $lookup: {
             from: "users",
-            localField: "userId",
-            foreignField: "id",
+            let: { vUserId: "$userId" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $or: [
+                      { $eq: ["$id", "$$vUserId"] },
+                      { $eq: [{ $toString: "$_id" }, "$$vUserId"] }
+                    ]
+                  }
+                }
+              }
+            ],
             as: "ownerDetails",
           },
         },
@@ -52,8 +63,8 @@ export async function GET(request: Request) {
         // Map status for UI backwards compatibility
         status: mapToLegacy(v.status || v.approvalStatus),
         verificationStatus: v.status || "pending_verification",
-        ownerName: v.ownerDetails?.name || "Unknown",
-        ownerMobile: v.ownerDetails?.phone || "Unknown",
+        ownerName: v.ownerDetails?.name || v.ownerDetails?.fullName || v.ownerDetails?.username || v.ownerDetails?.profile?.name || "Unknown",
+        ownerMobile: v.ownerDetails?.phone || v.ownerDetails?.mobile || v.ownerDetails?.phoneNumber || "Unknown",
         ownerDetails: undefined,
       }));
 
@@ -284,3 +295,4 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
+export async function DELETE(request: Request) { const auth = await requireAuth(); if (auth instanceof NextResponse) return auth; try { const url = new URL(request.url); const vehicleId = url.searchParams.get("id"); if (!vehicleId) return NextResponse.json({ error: "Missing vehicle id" }, { status: 400 }); const db = await getDatabase(); const vehicle = await db.collection("vehicles").findOne({ id: vehicleId }); if (!vehicle) return NextResponse.json({ error: "Vehicle not found" }, { status: 404 }); if (vehicle.userId !== auth.user.userId && !isAdminRole(auth.user.role)) return NextResponse.json({ error: "Unauthorized" }, { status: 403 }); await db.collection("vehicles").deleteOne({ id: vehicleId }); return NextResponse.json({ success: true }); } catch (error) { return NextResponse.json({ error: String(error) }, { status: 500 }); } }

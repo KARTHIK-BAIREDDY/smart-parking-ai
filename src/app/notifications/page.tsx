@@ -85,7 +85,7 @@ export default function NotificationsPage() {
     <main className="min-h-screen p-8 max-w-3xl mx-auto">
       <div className="mb-8 flex items-center gap-4">
         <Link
-          href="/dashboard"
+          href="/parking"
           className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-gray-400 hover:text-white transition"
         >
           <ArrowLeft className="w-5 h-5" />

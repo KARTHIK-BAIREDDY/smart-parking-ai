@@ -117,6 +117,29 @@ export default function EntryCameraPage() {
         const scaleX = video.clientWidth / video.videoWidth;
         const scaleY = video.clientHeight / video.videoHeight;
 
+        console.log("--- COORDINATE AUDIT ---");
+        console.log("video.videoWidth", video.videoWidth);
+        console.log("video.videoHeight", video.videoHeight);
+        console.log("video.clientWidth", video.clientWidth);
+        console.log("video.clientHeight", video.clientHeight);
+        
+        const canvas = webcamRef.current.getCanvas();
+        if (canvas) {
+          console.log("canvas.width", canvas.width);
+          console.log("canvas.height", canvas.height);
+          console.log("canvas.clientWidth", canvas.clientWidth);
+          console.log("canvas.clientHeight", canvas.clientHeight);
+        }
+
+        console.log("detection.x", vx);
+        console.log("detection.y", vy);
+        console.log("detection.width", vw);
+        console.log("detection.height", vh);
+        console.log("drawn.x", vx * scaleX);
+        console.log("drawn.y", vy * scaleY);
+        console.log("drawn.width", vw * scaleX);
+        console.log("drawn.height", vh * scaleY);
+
         setTelemetry(prev => ({
           ...prev,
           status: "Vehicle Detected! Reading Plate...",
@@ -131,8 +154,129 @@ export default function EntryCameraPage() {
            return;
         }
 
-        try {
-          const { passes, originalCrop, plateCrop, plateRectLog, telemetry: ocrTelemetry } = await preprocessImage(
+        const engine = process.env.NEXT_PUBLIC_ANPR_ENGINE || 'legacy';
+
+        if (engine === 'ml') {
+          try {
+            const res = await fetch(imageSrc);
+            const blob = await res.blob();
+            
+            const formData = new FormData();
+            formData.append("file", blob, "frame.jpg");
+            formData.append("camera_id", "entry-cam-1");
+            formData.append("vehicle_box", JSON.stringify(vehicle.bbox));
+            formData.append("vehicle_type", vehicle.class.toUpperCase());
+            
+            const mlUrl = process.env.NEXT_PUBLIC_ML_ANPR_URL || "http://localhost:8000";
+            console.log("ML URL =", mlUrl);
+            console.log("FETCH URL =", `${mlUrl}/detect`);
+            
+            const mlRes = await fetch(`${mlUrl}/detect`, {
+              method: "POST",
+              body: formData
+            });
+            
+            if (!mlRes.ok) throw new Error(`ML Backend Error: ${mlRes.status}`);
+            const mlData = await mlRes.json();
+            
+            console.log("========== FRONTEND TRACE ==========");
+            console.log("ML_RESPONSE", mlData);
+            setTelemetry(prev => {
+              console.log("PREVIOUS_PLATE_STATE", prev.plateNumber || "-");
+              console.log("NEW_PLATE_STATE", mlData.plateText);
+              return prev;
+            });
+            
+            const { plateText, confidence, plateBox, vehicleId, voteCount, frameCount } = mlData;
+            console.log("VEHICLE_ID_RECEIVED", vehicleId);
+            
+            const boxesObj = {
+              vehicle: vehicle.bbox,
+              refinedPlateROI: plateBox || undefined,
+              scaleX: scaleX,
+              scaleY: scaleY
+            };
+            
+            setTelemetry(prev => ({ 
+              ...prev, status: `ML Tracking ${vehicleId}... Votes: ${voteCount}`, isError: false, 
+              vehicleConfidence: Math.round(vehicle.score * 100),
+              boxes: boxesObj,
+              previews: [{ src: imageSrc, name: "Full Frame" }]
+            }));
+            
+            if (!plateText || confidence < 30) {
+              setTelemetry(prev => ({
+                ...prev, status: `ML Tracking ${vehicleId}... Waiting for plate (votes: ${voteCount})`, isError: false, boxes: boxesObj
+              }));
+              isProcessingRef.current = false;
+              return;
+            }
+
+            const finalConfirmedText = plateText;
+            
+            console.log("RENDERING_PLATE", finalConfirmedText);
+            setTelemetry(prev => ({ 
+               ...prev, status: "Validating with Backend...", plateNumber: finalConfirmedText, ocrConfidence: Math.round(confidence),
+               previews: [{ src: imageSrc, name: "Full Frame" }],
+               boxes: boxesObj
+            }));
+            
+            const payload = {
+              cameraId: "entry-cam-1",
+              vehicleId: finalConfirmedText, 
+              confidence: Math.round(confidence),
+              placeId: selectedPlaceId,
+              imagePath: imageSrc,
+              vehicleType: vehicle.class.charAt(0).toUpperCase() + vehicle.class.slice(1)
+            };
+            
+            const slotsRes = await fetch("/api/slots/assign", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+
+            const data = await slotsRes.json();
+            
+            if (slotsRes.ok) {
+                if (data.action === "debounced") {
+                   isProcessingRef.current = false;
+                   return;
+                }
+                
+                try {
+                  const clearData = new FormData();
+                  clearData.append("camera_id", "entry-cam-1");
+                  await fetch(`${mlUrl}/clear_state`, { method: "POST", body: clearData });
+                  console.log("CLEARED ML TRACKER STATE ON ENTRY SUCCESS");
+                } catch (e) { console.error("Failed to clear ML state", e); }
+                
+                setTelemetry(prev => ({
+                  ...prev,
+                  status: "Allocated Slot: " + data.slotId,
+                  vehicleType: vehicle.class.toUpperCase(),
+                  plateNumber: data.vehicleNumber,
+                  ocrConfidence: Math.round(confidence),
+                  assignedSlot: data.slotId,
+                  sessionId: data.sessionId,
+                  isError: false,
+                  boxes: boxesObj,
+                  previews: [{ src: imageSrc, name: "Full Frame" }]
+                }));
+                
+                await new Promise(r => setTimeout(r, 4000));
+            } else {
+                setTelemetry(prev => ({ ...prev, status: `Rejected: ${data.error}`, isError: true, assignedSlot: "N/A", sessionId: "N/A" }));
+                await new Promise(r => setTimeout(r, 2000));
+            }
+            
+          } catch (e: any) {
+             console.error("ML ANPR ERROR:", e);
+             setTelemetry(prev => ({ ...prev, status: `ML Error: ${e.message}`, isError: true }));
+          }
+        } else {
+          try {
+            const { passes, originalCrop, plateCrop, plateRectLog, telemetry: ocrTelemetry } = await preprocessImage(
             imageSrc, 
             vehicle.bbox, 
             { width: video.videoWidth, height: video.videoHeight },
@@ -152,13 +296,12 @@ export default function EntryCameraPage() {
           setTelemetry(prev => ({ 
             ...prev, status: "OCR Processing...", isError: false, 
             vehicleConfidence: Math.round(vehicle.score * 100),
-            plateConfidence: ocrTelemetry.yoloConfidence ? Math.round(ocrTelemetry.yoloConfidence * 100) : undefined,
             boxes: boxesObj
           }));
 
           if (!ocrTelemetry.refinedPlateROI) {
             setTelemetry(prev => ({ 
-              ...prev, status: "Localization Failed", isError: true, debugLogs: [plateRectLog, "No localized plate found"],
+              ...prev, status: "Localization Failed", isError: true, debugLogs: [JSON.stringify(plateRectLog), "No localized plate found"],
               previews: [{ src: imageSrc, name: "Full Frame" }, originalCrop], boxes: boxesObj
             }));
             isProcessingRef.current = false;
@@ -174,7 +317,7 @@ export default function EntryCameraPage() {
             return;
           }
 
-          const debugLog = [plateRectLog];
+          const debugLog = [JSON.stringify(plateRectLog)];
           const executeOcrResult = await executeOCR(passes, debugLog);
           const bestResult = executeOcrResult?.bestResult;
           const allResults = executeOcrResult?.allResults || [];
@@ -268,6 +411,7 @@ export default function EntryCameraPage() {
           console.error("OCR PROCESSING ERROR:", e);
           setTelemetry(prev => ({ ...prev, status: "Model failed to load", isError: true }));
         }
+        } // End of engine === 'legacy' else block
       } else {
         setTelemetry(prev => {
           if (prev.status.includes("Monitoring")) return prev;
@@ -373,7 +517,7 @@ export default function EntryCameraPage() {
                 ref={webcamRef}
                 screenshotFormat="image/jpeg"
                 videoConstraints={{ facingMode: "environment" }}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-fill"
                 onUserMediaError={(err) => {
                   setTelemetry(prev => ({ ...prev, status: "Camera Error: Permission Denied or Unavailable", isError: true }));
                   setIsCameraActive(false);
@@ -394,6 +538,26 @@ export default function EntryCameraPage() {
                     height: `${telemetry.boxes.vehicle[3] * telemetry.boxes.scaleY}px`,
                   }}
                 />
+                {/* Candidate Boxes (Blue) */}
+                {telemetry.boxes.candidateROIs && telemetry.boxes.candidateROIs.map((roi, i) => {
+                  const isWinner = telemetry.boxes!.refinedPlateROI && 
+                                   roi[0] === telemetry.boxes!.refinedPlateROI[0] && 
+                                   roi[1] === telemetry.boxes!.refinedPlateROI[1];
+                  if (isWinner) return null;
+                  
+                  return (
+                    <div 
+                      key={`cand-${i}`}
+                      className="absolute border-2 border-blue-400 bg-blue-400/10 transition-all duration-300 shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+                      style={{
+                        left: `${roi[0] * telemetry.boxes!.scaleX}px`,
+                        top: `${roi[1] * telemetry.boxes!.scaleY}px`,
+                        width: `${roi[2] * telemetry.boxes!.scaleX}px`,
+                        height: `${roi[3] * telemetry.boxes!.scaleY}px`,
+                      }}
+                    />
+                  );
+                })}
                 {/* Plate Box (Green) */}
                 {telemetry.boxes.refinedPlateROI && (
                   <div 

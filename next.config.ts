@@ -29,7 +29,7 @@ const nextConfig: NextConfig = {
           },
           {
             key: "Content-Security-Policy",
-            value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' https://api.vahan.parivahan.gov.in ws://localhost:* wss://localhost:* ws://127.0.0.1:* wss://127.0.0.1:*;",
+            value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' https://api.vahan.parivahan.gov.in http://localhost:8000 http://127.0.0.1:8000 ws://localhost:* wss://localhost:* ws://127.0.0.1:* wss://127.0.0.1:* data:;",
           }
         ],
       },

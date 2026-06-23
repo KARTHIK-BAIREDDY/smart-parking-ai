@@ -10,7 +10,7 @@ export default function ProfilePage() {
 
   return (
     <main className="min-h-screen p-8 max-w-2xl mx-auto">
-      <Link href="/dashboard" className="text-gray-400 hover:text-white mb-8 inline-block">← Back to Dashboard</Link>
+      <Link href="/parking" className="text-gray-400 hover:text-white mb-8 inline-block">← Back to Dashboard</Link>
 
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8">
         <div className="flex items-center gap-5 mb-8">

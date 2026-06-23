@@ -1,77 +1,120 @@
 "use client";
 
-import { useState, Suspense, useEffect } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import { ShieldCheck, AlertTriangle, Loader2, ArrowRight } from "lucide-react";
-import { useSession, signIn, signOut } from "next-auth/react";
-import Link from "next/link";
-import { getRoleRedirect, isAdminRole, isUserRole } from "@/lib/auth-helpers";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import { ShieldCheck, AlertTriangle, Loader2, UserPlus, LogIn, KeyRound } from "lucide-react";
+import { signIn } from "next-auth/react";
 
-function getErrorMessage(code: string | null): string | null {
-  if (!code) return null;
-  switch (code) {
-    case "CredentialsSignin":
-      return "Invalid or expired OTP.";
-    case "AccessDenied":
-      return "Access denied.";
-    default:
-      return `Authentication error: ${code}`;
-  }
-}
+type AuthFlow = "login" | "register" | "forgotPassword";
 
-function LoginForm() {
-  const { status, data: session } = useSession();
+export default function UserLoginPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const errorCode = searchParams.get("error");
-  const errorMessage = getErrorMessage(errorCode);
 
+  const [flow, setFlow] = useState<AuthFlow>("login");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
-  const [step, setStep] = useState<1 | 2>(1);
+  const [successMsg, setSuccessMsg] = useState("");
+
+  // Form Fields
+  const [name, setName] = useState("");
   const [mobile, setMobile] = useState("");
-  const [otp, setOtp] = useState("");
-  const [isDevOtpEnabled, setIsDevOtpEnabled] = useState(false);
-  const [receivedDevOtp, setReceivedDevOtp] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
+  // Clear messages when switching flows
   useEffect(() => {
-    if (status === "authenticated" && session?.user?.role) {
-      router.push(getRoleRedirect(session.user.role));
-    }
-  }, [status, session, router]);
+    setErrorMsg("");
+    setSuccessMsg("");
+    setName("");
+    setMobile("");
+    setPassword("");
+    setConfirmPassword("");
+  }, [flow]);
 
-  useEffect(() => {
-    fetch("/api/auth/otp/dev-status")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.enabled) {
-          setIsDevOtpEnabled(true);
-        }
-      })
-      .catch((err) => console.error("Error checking dev-status:", err));
-  }, []);
+  const validateMobile = (mobile: string) => {
+    return /^[6-9]\d{9}$/.test(mobile);
+  };
 
-  const handleSendOTP = async (e: React.FormEvent) => {
+  const validatePassword = (pwd: string) => {
+    return /^\d{6}$/.test(pwd);
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
+    setSuccessMsg("");
+
+    if (!validateMobile(mobile)) {
+      setErrorMsg("Invalid mobile number. Must be 10 digits starting with 6, 7, 8, or 9.");
+      return;
+    }
+    if (!validatePassword(password)) {
+      setErrorMsg("Password must be exactly 6 numeric digits.");
+      return;
+    }
+
     setLoading(true);
-    setReceivedDevOtp(null);
+
+    const result = await signIn("user-otp", {
+      mobile,
+      password,
+      redirect: false,
+    });
+
+    if (result?.error) {
+      if (result.error.includes("needs a password")) {
+        setErrorMsg(result.error);
+        // We could automatically switch to forgot password here if desired, 
+        // but user requested to just show the message and redirect (or user can click).
+        setTimeout(() => setFlow("forgotPassword"), 2500);
+      } else {
+        setErrorMsg(result.error);
+      }
+      setLoading(false);
+      return;
+    }
+
+    // On success, NextAuth middleware handles checking if they should be redirected
+    router.push("/parking");
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    if (!name || name.trim().length < 2) {
+      setErrorMsg("Please enter your full name.");
+      return;
+    }
+    if (!validateMobile(mobile)) {
+      setErrorMsg("Invalid mobile number. Must be 10 digits starting with 6, 7, 8, or 9.");
+      return;
+    }
+    if (!validatePassword(password)) {
+      setErrorMsg("Password must be exactly 6 numeric digits.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg("Passwords do not match.");
+      return;
+    }
+
+    setLoading(true);
 
     try {
-      const res = await fetch("/api/auth/otp/send", {
+      const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mobile }),
+        body: JSON.stringify({ name, mobile, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to send OTP");
+      
+      if (!res.ok) throw new Error(data.error || "Registration failed");
 
-      if (data.devOtp) {
-        setReceivedDevOtp(data.devOtp);
-        setOtp(data.devOtp); // Auto-fill for convenience
-      }
-      setStep(2);
+      setSuccessMsg("Account created successfully. Please login.");
+      setTimeout(() => setFlow("login"), 2000);
     } catch (err: any) {
       setErrorMsg(err.message);
     } finally {
@@ -79,164 +122,246 @@ function LoginForm() {
     }
   };
 
-  const handleVerifyOTP = async (e: React.FormEvent) => {
+  const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
+    setSuccessMsg("");
+
+    if (!validateMobile(mobile)) {
+      setErrorMsg("Invalid mobile number. Must be 10 digits starting with 6, 7, 8, or 9.");
+      return;
+    }
+    if (!validatePassword(password)) {
+      setErrorMsg("Password must be exactly 6 numeric digits.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg("Passwords do not match.");
+      return;
+    }
+
     setLoading(true);
 
-    const result = await signIn("user-otp", {
-      mobile,
-      otp,
-      redirect: false,
-    });
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mobile, newPassword: password }),
+      });
+      const data = await res.json();
+      
+      if (!res.ok) throw new Error(data.error || "Failed to reset password");
 
-    setLoading(false);
-
-    if (result?.error) {
-      setErrorMsg(result.error);
-      return;
-    }
-
-    const res = await fetch("/api/auth/session");
-    const data = await res.json();
-    const role = data?.user?.role;
-
-    if (isAdminRole(role)) {
-      router.push("/admin/dashboard");
-      return;
-    }
-
-    if (!isUserRole(role)) {
-      await signOut({ redirect: false });
-      setErrorMsg("Unable to sign in. Please contact support.");
+      setSuccessMsg("Password updated successfully. Please login.");
+      setTimeout(() => setFlow("login"), 2000);
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (status === "loading" || status === "authenticated") {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-        <Loader2 className="w-10 h-10 animate-spin text-[var(--color-neon-blue)] mb-4" />
-        <p className="text-sm font-mono animate-pulse text-[var(--color-neon-cyan)]">
-          Verifying session...
-        </p>
-      </div>
-    );
-  }
-
   return (
-    <>
-      {isDevOtpEnabled && (
-        <div className="mb-6 flex items-center justify-center gap-2 px-3 py-2 text-xs font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-xl animate-pulse">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.7)]" />
-          Development Mode - OTP shown locally
-        </div>
-      )}
-
-      {(errorMessage || errorMsg) && (
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-6 p-4 bg-red-500/15 border border-red-500/40 rounded-xl flex items-start gap-3 text-red-300"
-        >
-          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-          <p className="text-sm leading-relaxed">{errorMessage || errorMsg}</p>
-        </motion.div>
-      )}
-
-      {step === 1 ? (
-        <form onSubmit={handleSendOTP} className="space-y-4">
-          <input
-            type="tel"
-            placeholder="Mobile Number (10 digits)"
-            value={mobile}
-            onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
-            required
-            pattern="\d{10}"
-            className="w-full p-4 rounded-xl bg-slate-800 text-white border border-slate-700 focus:border-cyan-400 outline-none tracking-widest text-lg"
-          />
-          <button
-            type="submit"
-            disabled={loading || mobile.length !== 10}
-            className="w-full py-4 bg-[var(--color-neon-blue)] hover:bg-blue-600 text-white font-bold rounded-xl transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(0,81,255,0.2)]"
-          >
-            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Send OTP"}
-          </button>
-        </form>
-      ) : (
-        <form onSubmit={handleVerifyOTP} className="space-y-4">
-          <p className="text-sm text-gray-400 mb-2">OTP sent to {mobile} <button type="button" onClick={() => setStep(1)} className="text-cyan-400 hover:underline">Change</button></p>
-          
-          {receivedDevOtp && (
-            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-center text-sm text-amber-300 font-mono flex flex-col gap-1 items-center justify-center">
-              <span className="text-xs text-amber-400/80">Dev OTP (auto-filled):</span>
-              <span className="font-bold text-xl text-amber-200 tracking-wider select-all">{receivedDevOtp}</span>
-            </div>
-          )}
-
-          <input
-            type="text"
-            placeholder="6-Digit OTP"
-            value={otp}
-            onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            required
-            pattern="\d{6}"
-            className="w-full p-4 rounded-xl bg-slate-800 text-white border border-slate-700 focus:border-cyan-400 outline-none text-center tracking-[0.5em] text-2xl"
-          />
-          <button
-            type="submit"
-            disabled={loading || otp.length !== 6}
-            className="w-full py-4 bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold rounded-xl transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(6,182,212,0.2)]"
-          >
-            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify & Login"}
-          </button>
-        </form>
-      )}
-
-      <p className="text-gray-400 text-sm text-center mt-6">
-        New user?{" "}
-        <Link href="/signup" className="text-[var(--color-neon-cyan)] hover:underline">
-          Create an account
-        </Link>
-      </p>
-    </>
-  );
-}
-
-export default function LoginPage() {
-  return (
-    <main className="min-h-[calc(100vh-4rem)] flex items-center justify-center p-4 relative overflow-hidden bg-slate-950">
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-[var(--color-neon-blue)]/10 blur-[150px] rounded-full pointer-events-none" />
+    <main className="min-h-screen flex items-center justify-center p-4 sm:p-6 lg:p-8 bg-black relative overflow-hidden">
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-cyan-900/10 blur-[120px] rounded-full pointer-events-none" />
 
       <motion.div
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.5 }}
-        className="glass-panel p-10 rounded-3xl w-full max-w-md relative z-10 border border-[var(--color-neon-blue)]/30 shadow-[0_0_50px_rgba(0,81,255,0.15)] bg-slate-950/40 backdrop-blur-xl"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md relative z-10"
       >
-        <div className="flex flex-col items-center mb-6">
-          <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ type: "spring", bounce: 0.5, delay: 0.2 }}
-            className="w-20 h-20 rounded-2xl bg-[var(--color-neon-blue)]/20 text-[var(--color-neon-blue)] flex items-center justify-center mb-5 border border-[var(--color-neon-blue)]/50 shadow-[0_0_30px_rgba(0,81,255,0.3)]"
-          >
-            <ShieldCheck className="w-10 h-10" />
-          </motion.div>
-          <h1 className="text-3xl font-bold text-white text-center">Login via Mobile</h1>
-          <p className="text-gray-400 mt-2 text-sm text-center">Fast, passwordless access</p>
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-cyan-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
+            <ShieldCheck className="w-8 h-8 text-cyan-400" />
+          </div>
+          <h1 className="text-3xl font-bold text-white mb-2">User Portal</h1>
+          <p className="text-gray-400">Mobile Number + Password Access</p>
         </div>
 
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
-            </div>
-          }
-        >
-          <LoginForm />
-        </Suspense>
+        <div className="glass-panel p-6 sm:p-8 rounded-3xl border border-cyan-500/20 bg-slate-900/50 shadow-2xl backdrop-blur-xl">
+          
+          {/* Flow Tabs */}
+          <div className="flex bg-slate-800/50 rounded-xl p-1 mb-6 border border-slate-700/50">
+            <button
+              onClick={() => setFlow("login")}
+              className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${
+                flow === "login" ? "bg-cyan-600 text-white shadow-md" : "text-gray-400 hover:text-white"
+              }`}
+            >
+              Login
+            </button>
+            <button
+              onClick={() => setFlow("register")}
+              className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${
+                flow === "register" ? "bg-cyan-600 text-white shadow-md" : "text-gray-400 hover:text-white"
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={flow}
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              {errorMsg && (
+                <div className="mb-6 p-4 bg-red-500/15 border border-red-500/40 rounded-xl flex items-start gap-3 text-red-300">
+                  <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm leading-relaxed">{errorMsg}</p>
+                </div>
+              )}
+
+              {successMsg && (
+                <div className="mb-6 p-4 bg-green-500/15 border border-green-500/40 rounded-xl flex items-start gap-3 text-green-300">
+                  <ShieldCheck className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm leading-relaxed">{successMsg}</p>
+                </div>
+              )}
+
+              {/* LOGIN FLOW */}
+              {flow === "login" && (
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <input
+                    type="tel"
+                    placeholder="Mobile Number (10 digits)"
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
+                  />
+                  <input
+                    type="password"
+                    placeholder="6-Digit Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono tracking-[0.2em]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading || mobile.length !== 10 || password.length !== 6}
+                    className="w-full py-3 px-4 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-all"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Login"}
+                    {!loading && <LogIn className="w-5 h-5" />}
+                  </button>
+                  <div className="text-center mt-4">
+                    <button
+                      type="button"
+                      onClick={() => setFlow("forgotPassword")}
+                      className="text-cyan-400 hover:text-cyan-300 text-sm font-medium"
+                    >
+                      Forgot Password?
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* REGISTER FLOW */}
+              {flow === "register" && (
+                <form onSubmit={handleRegister} className="space-y-4">
+                  <input
+                    type="text"
+                    placeholder="Full Name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="Mobile Number (10 digits)"
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Create 6-Digit Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono tracking-[0.2em]"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Confirm Password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono tracking-[0.2em]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading || !name || mobile.length !== 10 || password.length !== 6 || confirmPassword.length !== 6}
+                    className="w-full py-3 px-4 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-all mt-2"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Create Account"}
+                    {!loading && <UserPlus className="w-5 h-5" />}
+                  </button>
+                </form>
+              )}
+
+              {/* FORGOT PASSWORD FLOW */}
+              {flow === "forgotPassword" && (
+                <form onSubmit={handleForgotPassword} className="space-y-4">
+                  <p className="text-sm text-gray-400 mb-4 text-center">
+                    Enter your registered mobile number to reset your password.
+                  </p>
+                  <input
+                    type="tel"
+                    placeholder="Registered Mobile Number"
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
+                  />
+                  <input
+                    type="password"
+                    placeholder="New 6-Digit Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono tracking-[0.2em]"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Confirm New Password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    required
+                    className="w-full bg-slate-900/50 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono tracking-[0.2em]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading || mobile.length !== 10 || password.length !== 6 || confirmPassword.length !== 6}
+                    className="w-full py-3 px-4 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-all mt-2"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Reset Password"}
+                    {!loading && <KeyRound className="w-5 h-5" />}
+                  </button>
+                  <div className="text-center mt-4">
+                    <button
+                      type="button"
+                      onClick={() => setFlow("login")}
+                      className="text-cyan-400 hover:text-cyan-300 text-sm font-medium"
+                    >
+                      Back to Login
+                    </button>
+                  </div>
+                </form>
+              )}
+
+            </motion.div>
+          </AnimatePresence>
+
+        </div>
       </motion.div>
     </main>
   );
 }
-

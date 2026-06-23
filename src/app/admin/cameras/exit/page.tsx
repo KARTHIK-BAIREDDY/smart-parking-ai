@@ -114,6 +114,29 @@ export default function ExitCameraPage() {
         const scaleX = video.clientWidth / video.videoWidth;
         const scaleY = video.clientHeight / video.videoHeight;
 
+        console.log("--- COORDINATE AUDIT ---");
+        console.log("video.videoWidth", video.videoWidth);
+        console.log("video.videoHeight", video.videoHeight);
+        console.log("video.clientWidth", video.clientWidth);
+        console.log("video.clientHeight", video.clientHeight);
+        
+        const canvas = webcamRef.current.getCanvas();
+        if (canvas) {
+          console.log("canvas.width", canvas.width);
+          console.log("canvas.height", canvas.height);
+          console.log("canvas.clientWidth", canvas.clientWidth);
+          console.log("canvas.clientHeight", canvas.clientHeight);
+        }
+
+        console.log("detection.x", vx);
+        console.log("detection.y", vy);
+        console.log("detection.width", vw);
+        console.log("detection.height", vh);
+        console.log("drawn.x", vx * scaleX);
+        console.log("drawn.y", vy * scaleY);
+        console.log("drawn.width", vw * scaleX);
+        console.log("drawn.height", vh * scaleY);
+
         setTelemetry(prev => ({
           ...prev,
           status: "Vehicle Detected! Reading Plate...",
@@ -128,8 +151,120 @@ export default function ExitCameraPage() {
            return;
         }
 
-        try {
-          const { passes, originalCrop, plateCrop, plateRectLog, telemetry: ocrTelemetry } = await preprocessImage(
+        const engine = process.env.NEXT_PUBLIC_ANPR_ENGINE || 'legacy';
+
+        if (engine === 'ml') {
+          try {
+            const res = await fetch(imageSrc);
+            const blob = await res.blob();
+            
+            const formData = new FormData();
+            formData.append("file", blob, "frame.jpg");
+            formData.append("camera_id", "exit-cam-1");
+            formData.append("vehicle_box", JSON.stringify(vehicle.bbox));
+            formData.append("vehicle_type", vehicle.class.toUpperCase());
+            
+            console.log("EXIT VEHICLE TYPE:", vehicle.class);
+            console.log("FORMDATA VEHICLE_TYPE:", vehicle.class?.toUpperCase());
+            
+            const mlUrl = process.env.NEXT_PUBLIC_ML_ANPR_URL || "http://localhost:8000";
+            const mlRes = await fetch(`${mlUrl}/detect`, {
+              method: "POST",
+              body: formData
+            });
+            
+            if (!mlRes.ok) throw new Error(`ML Backend Error: ${mlRes.status}`);
+            const mlData = await mlRes.json();
+            
+            const { plateText, confidence, plateBox, vehicleId, voteCount, frameCount } = mlData;
+            
+            const boxesObj = {
+              vehicle: vehicle.bbox,
+              refinedPlateROI: plateBox || undefined,
+              scaleX: scaleX,
+              scaleY: scaleY
+            };
+            
+            setTelemetry(prev => ({ 
+              ...prev, status: `ML Tracking ${vehicleId}... Votes: ${voteCount}`, isError: false, 
+              vehicleConfidence: Math.round(vehicle.score * 100),
+              boxes: boxesObj,
+              previews: [{ src: imageSrc, name: "Full Frame" }]
+            }));
+            
+            if (!plateText || confidence < 30) {
+              setTelemetry(prev => ({
+                ...prev, status: `ML Tracking ${vehicleId}... Waiting for plate (votes: ${voteCount})`, isError: false, boxes: boxesObj
+              }));
+              isProcessingRef.current = false;
+              return;
+            }
+
+            const finalConfirmedText = plateText;
+            
+            setTelemetry(prev => ({ 
+               ...prev, status: "Validating with Backend...", plateNumber: finalConfirmedText, ocrConfidence: Math.round(confidence),
+               previews: [{ src: imageSrc, name: "Full Frame" }],
+               boxes: boxesObj
+            }));
+            
+            const payload = {
+              cameraId: "exit-cam-1",
+              vehicleId: finalConfirmedText, 
+              confidence: Math.round(confidence),
+              placeId: selectedPlaceId,
+              imagePath: imageSrc,
+              vehicleType: vehicle.class.charAt(0).toUpperCase() + vehicle.class.slice(1)
+            };
+            
+            const slotsRes = await fetch("/api/slots/exit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+
+            const data = await slotsRes.json();
+            
+            if (slotsRes.ok) {
+                if (data.action === "debounced") {
+                   isProcessingRef.current = false;
+                   return;
+                }
+                
+                try {
+                  const clearData = new FormData();
+                  clearData.append("camera_id", "exit-cam-1");
+                  await fetch(`${mlUrl}/clear_state`, { method: "POST", body: clearData });
+                  console.log("CLEARED ML TRACKER STATE ON EXIT SUCCESS");
+                } catch (e) { console.error("Failed to clear ML state", e); }
+                
+                setTelemetry(prev => ({
+                  ...prev,
+                  status: "Exit Confirmed. Barrier Open.",
+                  vehicleType: vehicle.class.toUpperCase(),
+                  plateNumber: data.vehicleNumber,
+                  ocrConfidence: Math.round(confidence),
+                  assignedSlot: data.slotId,
+                  sessionId: data.sessionId,
+                  isError: false,
+                  boxes: boxesObj,
+                  previews: [{ src: imageSrc, name: "Full Frame" }]
+                }));
+                
+                await new Promise(r => setTimeout(r, 4000));
+            } else {
+                setTelemetry(prev => ({ ...prev, status: `Rejected: ${data.error}`, isError: true, assignedSlot: "N/A", sessionId: "N/A" }));
+                await new Promise(r => setTimeout(r, 2000));
+            }
+            
+          } catch (e: any) {
+             console.error("ML ANPR ERROR:", e);
+             setTelemetry(prev => ({ ...prev, status: `ML Error: ${e.message}`, isError: true }));
+             await new Promise(r => setTimeout(r, 2000));
+          }
+        } else {
+          try {
+            const { passes, originalCrop, plateCrop, plateRectLog, telemetry: ocrTelemetry } = await preprocessImage(
              imageSrc, vehicle.bbox, { width: video.videoWidth, height: video.videoHeight }, vehicle.class
           );
 
@@ -144,7 +279,7 @@ export default function ExitCameraPage() {
 
           if (!ocrTelemetry.refinedPlateROI) {
             setTelemetry(prev => ({ 
-              ...prev, status: "Localization Failed", isError: true, debugLogs: [plateRectLog, "No localized plate found"],
+              ...prev, status: "Localization Failed", isError: true, debugLogs: [JSON.stringify(plateRectLog), "No localized plate found"],
               previews: [{ src: imageSrc, name: "Full Frame" }, originalCrop], boxes: boxesObj
             }));
             isProcessingRef.current = false;
@@ -160,7 +295,7 @@ export default function ExitCameraPage() {
             return;
           }
 
-          const debugLog = [plateRectLog];
+          const debugLog = [JSON.stringify(plateRectLog)];
           const executeOcrResult = await executeOCR(passes, debugLog);
           const bestResult = executeOcrResult?.bestResult;
           const allResults = executeOcrResult?.allResults || [];
@@ -255,6 +390,7 @@ export default function ExitCameraPage() {
           setTelemetry(prev => ({ ...prev, status: `ERROR: ${e.message}`, isError: true }));
           await new Promise(r => setTimeout(r, 2000));
         }
+        } // End of engine === 'legacy' else block
       } else {
         setTelemetry(prev => {
           if (prev.status.includes("Monitoring")) return prev;
@@ -374,7 +510,7 @@ export default function ExitCameraPage() {
                 ref={webcamRef}
                 screenshotFormat="image/jpeg"
                 videoConstraints={{ facingMode: "environment" }}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-fill"
                 onUserMediaError={(err) => {
                   setTelemetry(prev => ({ ...prev, status: "Camera Error: Permission Denied or Unavailable", isError: true }));
                   setIsCameraActive(false);
@@ -428,27 +564,34 @@ export default function ExitCameraPage() {
                 )}
                 
                 {/* Candidate Boxes (Blue) */}
-                {telemetry.boxes.candidateROIs && telemetry.boxes.candidateROIs.map((cand, i) => (
-                  <div 
-                    key={`cand-${i}`}
-                    className="absolute border border-solid border-blue-500 bg-blue-500/10 pointer-events-none flex items-start"
-                    style={{
-                      left: cand[0] * telemetry.boxes!.scaleX,
-                      top: cand[1] * telemetry.boxes!.scaleY,
-                      width: cand[2] * telemetry.boxes!.scaleX,
-                      height: cand[3] * telemetry.boxes!.scaleY
-                    }}
-                  >
-                    <span className="bg-blue-500 text-white text-[8px] px-1 -mt-3 absolute whitespace-nowrap">
-                      C#{i+1}: {(cand[4]*100).toFixed(0)}
-                    </span>
-                  </div>
-                ))}
+                {telemetry.boxes.candidateROIs && telemetry.boxes.candidateROIs.map((roi, i) => {
+                  const isWinner = telemetry.boxes!.refinedPlateROI && 
+                                   roi[0] === telemetry.boxes!.refinedPlateROI[0] && 
+                                   roi[1] === telemetry.boxes!.refinedPlateROI[1];
+                  if (isWinner) return null;
+                  
+                  return (
+                    <div 
+                      key={`cand-${i}`}
+                      className="absolute border-2 border-blue-400 bg-blue-400/10 transition-all duration-300 shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+                      style={{
+                        left: `${roi[0] * telemetry.boxes!.scaleX}px`,
+                        top: `${roi[1] * telemetry.boxes!.scaleY}px`,
+                        width: `${roi[2] * telemetry.boxes!.scaleX}px`,
+                        height: `${roi[3] * telemetry.boxes!.scaleY}px`,
+                      }}
+                    >
+                      <span className="bg-blue-500 text-white text-[8px] px-1 -mt-3 absolute whitespace-nowrap">
+                        C#{i+1}: {(roi[4]*100).toFixed(0)}
+                      </span>
+                    </div>
+                  );
+                })}
                 
                 {/* Refined Plate Box (Green - WINNER) */}
                 {telemetry.boxes.refinedPlateROI && (
                   <div 
-                    className="absolute border-2 border-solid border-green-500 bg-green-500/20 flex items-start"
+                    className="absolute border-2 border-green-400 bg-green-400/20 transition-all duration-300 shadow-[0_0_10px_rgba(74,222,128,0.5)] flex items-start"
                     style={{
                       left: telemetry.boxes.refinedPlateROI[0] * telemetry.boxes.scaleX,
                       top: telemetry.boxes.refinedPlateROI[1] * telemetry.boxes.scaleY,
@@ -456,7 +599,7 @@ export default function ExitCameraPage() {
                       height: telemetry.boxes.refinedPlateROI[3] * telemetry.boxes.scaleY
                     }}
                   >
-                    <span className="bg-green-500 text-white text-[10px] font-bold px-1">
+                    <span className="bg-green-500 text-white text-[10px] font-bold px-1 absolute -top-4 left-0 whitespace-nowrap">
                        PLATE: [{telemetry.boxes.refinedPlateROI.map(Math.round).join(', ')}]
                        {telemetry.ocrConfidence !== undefined && ` | CONF: ${telemetry.ocrConfidence}%`}
                     </span>

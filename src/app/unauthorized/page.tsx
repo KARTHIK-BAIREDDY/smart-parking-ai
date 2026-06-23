@@ -17,7 +17,7 @@ export default function UnauthorizedPage() {
         </p>
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <Link
-            href="/dashboard"
+            href="/parking"
             className="px-6 py-3 rounded-xl bg-cyan-500 text-slate-950 font-bold hover:bg-cyan-400 transition"
           >
             Go to Dashboard

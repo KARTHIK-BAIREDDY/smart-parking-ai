@@ -45,63 +45,41 @@ export const authOptions: NextAuthOptions = {
     }),
     CredentialsProvider({
       id: "user-otp",
-      name: "User OTP Login",
+      name: "User Login",
       credentials: {
         mobile: { label: "Mobile", type: "text" },
-        otp: { label: "OTP", type: "text" }
+        password: { label: "Password", type: "password" }
       },
       async authorize(credentials) {
-        if (!credentials?.mobile || !credentials?.otp) return null;
+        if (!credentials?.mobile || !credentials?.password) return null;
         
         const db = await getDatabase();
-        const { mobile, otp } = credentials;
+        const { mobile, password } = credentials;
         const normalizedMobile = normalizePhoneNumber(mobile);
 
-        // Check dev bypass
-        const devStatusRes = await db.collection("settings").findOne({ _id: "devStatus" as any });
-        const devOtpEnabled = devStatusRes?.otpEnabled === true;
-
-        if (devOtpEnabled) {
-          // If dev mode is enabled, we check the latest OTP from the database
-          const record = await db.collection("otps").findOne({ mobile: normalizedMobile });
-          if (!record || String(record.otp) !== String(otp) || Date.now() > record.expiresAt.getTime()) {
-            console.error(`[AUTH] Failed OTP for ${normalizedMobile}. Record OTP: ${record?.otp}, Input: ${otp}, Expired: ${record ? Date.now() > record.expiresAt.getTime() : 'N/A'}`);
-            throw new Error("Invalid or expired OTP");
-          }
-          console.log(`[AUTH] OTP Verified for ${normalizedMobile}`);
-        } else {
-          // Prod check - assuming actual verification happens inside verifyOTP or here
-          // Since it's prod, we should use otpService.verifyOTP if it exists, or just do the same check
-          const record = await db.collection("otps").findOne({ mobile: normalizedMobile });
-          if (!record || String(record.otp) !== String(otp) || Date.now() > record.expiresAt.getTime()) {
-             console.error(`[AUTH] Failed Prod OTP for ${normalizedMobile}.`);
-             throw new Error("Invalid or expired OTP");
-          }
-          // Mark as verified
-          await db.collection("otps").updateOne({ _id: record._id }, { $set: { verified: true } });
-          console.log(`[AUTH] Prod OTP Verified for ${normalizedMobile}`);
-        }
-
-        // Auto-provision user
+        // Find user by mobile number
         let user = await db.collection("users").findOne({ phoneNumber: normalizedMobile, role: "user" });
         if (!user) {
-          // Fallback to mobile field if phoneNumber isn't indexed
           user = await db.collection("users").findOne({ mobile: normalizedMobile, role: "user" });
         }
+
         if (!user) {
-          const res = await db.collection("users").insertOne({
-            mobile: normalizedMobile,
-            phoneNumber: normalizedMobile,
-            role: "user",
-            createdAt: new Date()
-          } as any);
-          user = { _id: res.insertedId, mobile: normalizedMobile, role: "user" };
+          throw new Error("Invalid mobile number or password");
+        }
+
+        if (!user.passwordHash) {
+          throw new Error("Your account needs a password. Please use Forgot Password to create one.");
+        }
+
+        const isValid = await verifyPassword(password, user.passwordHash);
+        if (!isValid) {
+          throw new Error("Invalid mobile number or password");
         }
 
         return {
           id: user._id.toString(),
           role: "user",
-          name: user.mobile
+          name: user.name || user.mobile || user.phoneNumber
         };
       }
     })

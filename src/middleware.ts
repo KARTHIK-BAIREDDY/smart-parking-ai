@@ -3,10 +3,9 @@ import { getToken } from "next-auth/jwt";
 import { AUTH_SECRET, isAdminRole } from "@/lib/auth-helpers";
 
 const PROTECTED_USER_ROUTES = [
-  "/",
-  "/dashboard",
+  "/parking",
   "/profile",
-  "/my-vehicles",
+  "/manage-vehicles",
   "/my-parking",
   "/history",
   "/notifications",
@@ -87,15 +86,8 @@ export async function middleware(request: NextRequest) {
     (route) => pathname === route || pathname.startsWith(`${route}/`)
   );
 
-  // Redirect authenticated users away from auth pages
-  if (token && isPublicLoginRoute) {
-    if (role === "operator") {
-      return NextResponse.redirect(new URL("/admin/cameras/entry", request.url));
-    }
-    return NextResponse.redirect(
-      new URL(isAdminRole(role) ? "/admin/dashboard" : "/dashboard", request.url)
-    );
-  }
+  // Removed auto-redirect for authenticated users from public login routes
+  // Users will always see the login screens when navigating to them directly
 
   // Admin portal routes
   if (isAdminPortalRoute(pathname)) {

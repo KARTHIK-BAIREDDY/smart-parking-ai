@@ -1,0 +1,8 @@
+REAL-WORLD VALIDATION SUMMARY
+=============================
+Total Images: 0
+Detection Success Rate: 0.00%
+OCR Exact Match Rate: 0.00%
+Character Accuracy Rate: 0.00%
+Failure Count: 0
+False Positives: 0

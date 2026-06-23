@@ -79,7 +79,7 @@ export default function SignupPage() {
     }
 
     // Since this is signup, they are immediately logged in
-    router.push("/dashboard");
+    router.push("/parking");
   };
 
   return (

@@ -1,7 +1,11 @@
 fastapi
 uvicorn
-ultralytics
 python-multipart
+ultralytics
+paddleocr
+paddlepaddle
+numpy
 opencv-python-headless
+filterpy
+lapx
 pydantic
-requests
