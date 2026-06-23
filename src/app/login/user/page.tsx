@@ -56,7 +56,7 @@ export default function UserLoginPage() {
 
     setLoading(true);
 
-    const result = await signIn("user-otp", {
+    const result = await signIn("user-password", {
       mobile,
       password,
       redirect: false,

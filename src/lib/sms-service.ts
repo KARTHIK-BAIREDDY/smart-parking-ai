@@ -7,4 +7,4 @@
 
 export type { EntryPayload as SlotAssignmentSMSPayload } from "./sms/sms-provider";
 export { sendEntryNotification as sendSlotAssignmentSMS } from "./sms/sms-service";
-export { sendOtpSms, sendEntryNotification, sendExitNotification } from "./sms/sms-service";
+export { sendEntryNotification, sendExitNotification } from "./sms/sms-service";

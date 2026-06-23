@@ -44,7 +44,7 @@ export const authOptions: NextAuthOptions = {
       }
     }),
     CredentialsProvider({
-      id: "user-otp",
+      id: "user-password",
       name: "User Login",
       credentials: {
         mobile: { label: "Mobile", type: "text" },
@@ -129,7 +129,7 @@ export const authOptions: NextAuthOptions = {
       }
 
       // Allow Credentials providers
-      if (account?.provider === "admin-login" || account?.provider === "user-otp") {
+      if (account?.provider === "admin-login" || account?.provider === "user-password") {
         return true;
       }
 

@@ -7,17 +7,12 @@ export interface SmsResult {
 
 export interface SmsProvider {
   sendSms(phone: string, message: string): Promise<SmsResult>;
-  sendOtp?(payload: unknown): Promise<SmsResult>;
+
   sendEntry?(payload: unknown): Promise<SmsResult>;
   sendExit?(payload: unknown): Promise<SmsResult>;
   sendApproval?(payload: unknown): Promise<SmsResult>;
 }
 
-export interface OtpPayload {
-  mobile: string;
-  otp?: string;
-  [key: string]: unknown;
-}
 export interface EntryPayload {
   mobile: string;
   locationName?: string;

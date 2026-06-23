@@ -47,7 +47,7 @@ export default function HeroSection() {
           </motion.button>
           
           <motion.button 
-            onClick={() => router.push('/signup')}
+            onClick={() => router.push('/login/user')}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             className="px-8 py-4 border border-[var(--color-neon-blue)] text-[var(--color-neon-blue)] font-bold rounded-lg flex items-center gap-2 hover:bg-[var(--color-neon-blue)] hover:text-white transition-all shadow-[0_0_15px_rgba(0,81,255,0.2)]"

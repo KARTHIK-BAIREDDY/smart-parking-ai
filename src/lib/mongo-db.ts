@@ -61,11 +61,6 @@ async function createAllIndexes(db: Db): Promise<void> {
     db.collection("parking_sessions").createIndex({ entryTime: -1 },             { name: "sessions_entryTime" }),
     db.collection("parking_sessions").createIndex({ status: 1, entryTime: -1 },  { name: "sessions_status_entryTime" }),
 
-    // ─── otps — mobile lookup + TTL auto-expiry ───────────────────────────────
-    // IMPORTANT: name must match init-indexes.js exactly to avoid IndexOptionsConflict
-    db.collection("otps").createIndex({ mobile: 1 },    { name: "otps_mobile" }),
-    db.collection("otps").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: "otps_expiresAt_ttl" }),
-
     // ─── camera_events ───────────────────────────────────────────────────────
     db.collection("camera_events").createIndex({ plateNumber: 1 },          { name: "camera_events_plate" }),
     db.collection("camera_events").createIndex({ timestamp: -1 },           { name: "camera_events_timestamp" }),
@@ -158,7 +153,7 @@ const CRITICAL_CHECKS = [
   { col: "users",            name: "users_mobile_unique",           wantUnique: true,  wantTtl: false },
   { col: "users",            name: "users_email_unique",            wantUnique: true,  wantTtl: false },
   { col: "vehicles",         name: "vehicles_vehicleNumber_unique", wantUnique: true,  wantTtl: false },
-  { col: "otps",             name: "otps_expiresAt_ttl",            wantUnique: false, wantTtl: true  },
+
   { col: "parking_sessions", name: "sessions_status_entryTime",     wantUnique: false, wantTtl: false },
 ] as const;
 

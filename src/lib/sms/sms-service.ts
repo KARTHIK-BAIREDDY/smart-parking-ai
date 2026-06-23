@@ -5,23 +5,10 @@
 // ---------------------------------------------------------------------------
 
 import { Msg91Provider } from "./msg91-provider";
-import type { EntryPayload, ExitPayload, OtpPayload, ApprovalPayload } from "./sms-provider";
+import type { EntryPayload, ExitPayload, ApprovalPayload } from "./sms-provider";
 
 // Instantiate once — provider reads env vars at construction time
 const provider = new Msg91Provider();
-
-/**
- * Send an OTP to a mobile number.
- * Safe to call from anywhere — silently degrades in dev when credentials absent.
- */
-export async function sendOtpSms(mobile: string, otp: string): Promise<boolean> {
-  try {
-    return (await provider.sendOtp({ mobile, otp })).success;
-  } catch (err) {
-    console.error("[sms-service] sendOtpSms error:", err);
-    return false;
-  }
-}
 
 /**
  * Dispatch a parking entry / slot assignment notification.
@@ -63,4 +50,4 @@ export async function sendApprovalNotification(payload: ApprovalPayload): Promis
 }
 
 // Re-export payload types so callers don't need to import from provider
-export type { OtpPayload, EntryPayload, ExitPayload, ApprovalPayload };
+export type { EntryPayload, ExitPayload, ApprovalPayload };
