@@ -4,8 +4,9 @@ python-multipart
 ultralytics
 paddleocr
 paddlepaddle
-numpy
+numpy<2.0.0
 opencv-python-headless
 filterpy
 lapx
 pydantic
+scipy
