@@ -163,7 +163,7 @@ export default function UserLoginPage() {
 
   return (
     <main className="min-h-screen flex items-center justify-center p-4 sm:p-6 lg:p-8 bg-black relative overflow-hidden">
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-cyan-900/10 blur-[120px] rounded-full pointer-events-none" />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] max-w-full h-[800px] max-h-[100vh] bg-cyan-900/10 blur-[120px] rounded-full pointer-events-none" />
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}

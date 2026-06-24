@@ -38,18 +38,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (isPublicRoute) {
     // Render public layout with Navbar
     return (
-      <>
+      <div className="min-h-screen flex flex-col w-full overflow-x-hidden relative">
         <Navbar />
-        <div className="pt-16 flex-1 flex flex-col">{children}</div>
-      </>
+        <div className="pt-16 flex-1 flex flex-col w-full">{children}</div>
+      </div>
     );
   }
 
   // Authenticated routes use the Sidebar layout
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[var(--color-background)]">
+    <div className="flex flex-col md:flex-row h-screen w-full overflow-hidden bg-[var(--color-background)]">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto bg-[var(--color-background)] p-4 md:p-8">
+      <main className="flex-1 overflow-y-auto bg-[var(--color-background)] p-4 md:p-8 w-full">
         <div className="mx-auto max-w-7xl h-full">
           {children}
         </div>

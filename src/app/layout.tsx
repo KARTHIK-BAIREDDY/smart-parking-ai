@@ -30,9 +30,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full w-full overflow-x-hidden antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-slate-950 text-white">
+      <body className="min-h-full w-full overflow-x-hidden flex flex-col bg-slate-950 text-white">
         <AuthProvider>
           <ParkingProvider>
             <NotificationProvider>

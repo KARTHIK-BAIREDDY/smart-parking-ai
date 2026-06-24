@@ -6,7 +6,7 @@ import { User, Shield, ShieldAlert } from "lucide-react";
 export default function LoginSelectionPage() {
   return (
     <main className="min-h-screen flex items-center justify-center px-4 py-10 bg-slate-950 relative overflow-hidden">
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-cyan-500/10 blur-[150px] rounded-full pointer-events-none" />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] max-w-full h-[800px] max-h-full bg-cyan-500/10 blur-[150px] rounded-full pointer-events-none" />
 
       <div className="w-full max-w-4xl mx-auto glass-panel p-8 md:p-12 rounded-3xl border border-slate-800 bg-slate-900/60 backdrop-blur-xl relative z-10">
         <h1 className="text-3xl font-bold text-white text-center mb-2">Welcome</h1>
